@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python \"${CLAUDE_PLUGIN_ROOT}/hooks-handlers/sync-engine.py\""
+            "command": "for p in python3 python py; do command -v \"$p\" >/dev/null 2>&1 && exec \"$p\" \"${CLAUDE_PLUGIN_ROOT}/hooks-handlers/sync-engine.py\"; done"
           }
         ]
       }
@@ -15,7 +15,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python \"${CLAUDE_PLUGIN_ROOT}/hooks-handlers/coord-unread.py\""
+            "command": "for p in python3 python py; do command -v \"$p\" >/dev/null 2>&1 && exec \"$p\" \"${CLAUDE_PLUGIN_ROOT}/hooks-handlers/coord-unread.py\"; done"
           }
         ]
       }

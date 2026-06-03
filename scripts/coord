@@ -1,0 +1,11 @@
+#!/bin/sh
+# launcher portável do coord: encontra um interpretador Python e roda o engine ao lado.
+# Funciona em Linux/Mac e no git-bash do Windows. Uso: coord <comando> [args...]
+DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+for p in python3 python py; do
+  if command -v "$p" >/dev/null 2>&1; then
+    exec "$p" "$DIR/coord.py" "$@"
+  fi
+done
+echo "coord: nenhum interpretador Python encontrado no PATH (instale Python 3)" >&2
+exit 1

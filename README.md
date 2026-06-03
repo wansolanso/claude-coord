@@ -14,7 +14,8 @@ watcher `tail -F` que avisa de mensagens novas em 1-5s.
 |---|---|
 | Skill `coord` | porta de entrada auto-descoberta pelo Claude (gatilhos: "handoff", "coordene com outro claude", etc.) |
 | `scripts/coord.py` | o engine (CLI: `init send inbox read open answer watch`) — Python puro, sem deps |
-| Hook `SessionStart` | sincroniza o engine para `~/.claude/coord-bin/coord.py` (caminho portável) |
+| `scripts/coord` | launcher portável que acha o Python (`python3`/`python`/`py`) sozinho |
+| Hook `SessionStart` | sincroniza launcher + engine para `~/.claude/coord-bin/` (caminho portável) |
 | Hook `UserPromptSubmit` | injeta aviso quando há mensagens não lidas (fail-safe, custo 0 token quando ocioso) |
 
 ## Instalação em outra máquina
@@ -30,7 +31,7 @@ Reinicie a sessão (ou `/reload-plugins`). Pronto — o skill `coord` aparece so
 ## Uso (resumo)
 
 ```bash
-ENGINE="python ~/.claude/coord-bin/coord.py"
+ENGINE=~/.claude/coord-bin/coord                 # launcher acha o Python sozinho
 $ENGINE init meu-nome --modifies "o que toco"   # 1x por sessão
 $ENGINE watch                                    # watcher em background
 $ENGINE send --to todos --type aviso --subject "..." --body "..."

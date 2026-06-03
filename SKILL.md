@@ -19,11 +19,14 @@ watcher `tail -F` que avisa de mensagens novas.
 ## Engine
 
 ```
-ENGINE = python ~/.claude/coord-bin/coord.py
+ENGINE = ~/.claude/coord-bin/coord
 ```
-Esse caminho é estável e portável (qualquer máquina/OS). Um hook `SessionStart` copia o
-engine pra lá no início de toda sessão. Se por algum motivo não existir, o engine original
-fica em `<plugin>/scripts/coord.py` (rode o hook `sync-engine.py` ou copie manualmente).
+Esse launcher é estável e portável (Linux/Mac e git-bash do Windows) — ele acha o Python
+sozinho (`python3`/`python`/`py`), então você não precisa saber qual existe na máquina.
+Um hook `SessionStart` copia o launcher + engine pra lá no início de toda sessão.
+
+Fallback se o launcher não existir: `python3 <plugin>/scripts/coord.py` (ou `python` no
+Windows). O engine é Python 3 puro, sem dependências.
 
 **Sala (room)** = a pasta onde as mensagens vivem. Default: `~/.claude/coord-room`
 (estável, vale em todos os projetos). Para uma sala isolada (ex: esforço cross-project
