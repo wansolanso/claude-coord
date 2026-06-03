@@ -1,0 +1,15 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "claude-coord",
+  "description": "Coordenação multi-agente entre Claudes — handoff conflict-free + watcher",
+  "owner": {
+    "name": "wansolanso"
+  },
+  "plugins": [
+    {
+      "name": "coord",
+      "source": "./",
+      "description": "Coordenação multi-agente entre Claudes: mensagens conflict-free + watcher de novas mensagens"
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+# dados de sala / runtime (nunca versionar — é scratchpad local)
+coord-room/
+messages/
+state/
+feed.log
+**/.coordme
+
+# artefatos de teste
+_test/
+
+# python
+__pycache__/
+*.pyc
