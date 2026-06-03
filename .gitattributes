@@ -1,0 +1,7 @@
+# Força LF em todos os arquivos de texto — shell scripts e .py com CRLF
+# quebram em Linux/Mac (shebang "#!/bin/sh\r" -> bad interpreter).
+* text=auto eol=lf
+*.py text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+scripts/coord text eol=lf

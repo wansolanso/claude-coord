@@ -22,10 +22,16 @@ def main():
                 src = os.path.join(scripts, name)
                 if os.path.isfile(src):
                     dst = os.path.join(dst_dir, name)
-                    shutil.copy2(src, dst)
-                    if name == "coord":  # garante bit de execução no launcher
+                    if name == "coord":
+                        # launcher é shell script: normaliza para LF (CRLF quebra o
+                        # shebang em Linux/Mac) e garante bit de execução
+                        data = open(src, "rb").read().replace(b"\r\n", b"\n")
+                        with open(dst, "wb") as fh:
+                            fh.write(data)
                         st = os.stat(dst)
                         os.chmod(dst, st.st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+                    else:
+                        shutil.copy2(src, dst)
     except Exception:
         pass
     sys.stdout.write("{}")
