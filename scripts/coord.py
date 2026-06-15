@@ -9,8 +9,9 @@ Modelo:
   - feed.log = 1 linha por mensagem (append atômico) -> alimenta o watcher (tail nativo em Python)
   - state/  = cursores por-agente + overrides de status + registro de membros (pasta de cada)
 
-Identidade: --me NAME  |  $COORD_ME  |  <cwd>/.coordme  (escrito por `join`/`init`)
-Sala ativa: --room NAME | $COORD_ROOM | <cwd>/.coordroom (escrito por `join`)  |  $COORD_DIR (path direto)
+Identidade: --me NAME | $COORD_ME | sessão (CLAUDE_CODE_SESSION_ID) | <cwd>/.coordme
+Sala ativa: --room NAME | $COORD_ROOM | sessão | <cwd>/.coordroom | $COORD_DIR (path direto)
+  (binding por sessão precede o por-cwd -> agentes co-localizados no mesmo cwd não colidem)
             dirs sob $COORD_ROOMS_BASE (default ~/.claude/coord-rooms/<sala>)
 
 Verbos: rooms join room state | link unlink move nest unnest (DAG) | init send inbox
@@ -22,6 +23,8 @@ HOME = os.path.expanduser("~")
 # Salas são entidades separadas, cada uma um diretório sob esta base.
 ROOMS_BASE = os.environ.get("COORD_ROOMS_BASE") or os.path.join(HOME, ".claude", "coord-rooms")
 ROOM_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+# Vínculo identidade/sala POR SESSÃO (resolve cwd compartilhado entre agentes co-localizados).
+SESS_DIR = os.environ.get("COORD_SESSIONS_DIR") or os.path.join(HOME, ".claude", "coord-sessions")
 
 # Caminhos da sala ATIVA — preenchidos por _set_room()/bind_room() a cada comando.
 BASE = MSG = STA = STT = FEED = None
@@ -54,11 +57,45 @@ def _read_cwd_file(fn):
     p = os.path.join(os.getcwd(), fn)
     return open(p, encoding="utf-8").read().strip() if os.path.isfile(p) else None
 
+# ---------- identidade/sala POR SESSÃO (fix do cwd compartilhado) ----------
+# Cada sessão Claude tem CLAUDE_CODE_SESSION_ID próprio -> identidade própria mesmo
+# no MESMO cwd. O hook Stop herda essa env var, então `coord wake` resolve o agente
+# certo sem --me. Tem precedência sobre ./.coordme e ./.coordroom (que colidem por cwd).
+def _session_binding():
+    sid = os.environ.get("CLAUDE_CODE_SESSION_ID")
+    if not sid:
+        return None
+    p = os.path.join(SESS_DIR, sid)
+    if not os.path.isfile(p):
+        return None
+    d = {}
+    try:
+        for line in open(p, encoding="utf-8"):
+            if "=" in line:
+                k, _, v = line.partition("="); d[k.strip()] = v.strip()
+    except Exception:
+        return None
+    return d
+
+def _write_session_binding(name, room):
+    sid = os.environ.get("CLAUDE_CODE_SESSION_ID")
+    if not sid:
+        return
+    try:
+        os.makedirs(SESS_DIR, exist_ok=True)
+        with open(os.path.join(SESS_DIR, sid), "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(f"name={name}\nroom={room}\ncwd={os.getcwd()}\n")
+    except Exception:
+        pass
+
 def room_name_from(args):
     if getattr(args, "room", None):
         return args.room
     if os.environ.get("COORD_ROOM"):
         return os.environ["COORD_ROOM"]
+    b = _session_binding()
+    if b and b.get("room"):
+        return b["room"]
     return _read_cwd_file(".coordroom")
 
 def room_dir_for(name):
@@ -127,14 +164,19 @@ def _existing_me():
     return _read_cwd_file(".coordme")
 
 def _me_safe(args):
-    # como me_from, mas NUNCA sai (pro hook/wake silencioso).
-    return getattr(args, "me", None) or os.environ.get("COORD_ME") or _existing_me()
+    # como me_from, mas NUNCA sai (pro hook/wake silencioso). Sessão > $COORD_ME > .coordme.
+    b = _session_binding()
+    return (getattr(args, "me", None) or os.environ.get("COORD_ME")
+            or (b.get("name") if b else None) or _existing_me())
 
 def me_from(args):
     if getattr(args, "me", None):
         return args.me
     if os.environ.get("COORD_ME"):
         return os.environ["COORD_ME"]
+    b = _session_binding()
+    if b and b.get("name"):
+        return b["name"]
     p = os.path.join(os.getcwd(), ".coordme")
     if os.path.isfile(p):
         return open(p, encoding="utf-8").read().strip()
@@ -240,8 +282,9 @@ def _do_join(room, name, modifies=None, reserves=None, body=None):
     if not name:
         sys.exit("erro: informe a identidade. use: coord join <sala> --as <nome>")
     cwd = os.getcwd()
-    open(os.path.join(cwd, ".coordroom"), "w", encoding="utf-8").write(room)  # vincula a sala ao projeto
-    open(os.path.join(cwd, ".coordme"),   "w", encoding="utf-8").write(name)
+    open(os.path.join(cwd, ".coordroom"), "w", encoding="utf-8", newline="\n").write(room)  # vincula a sala ao projeto
+    open(os.path.join(cwd, ".coordme"),   "w", encoding="utf-8", newline="\n").write(name)
+    _write_session_binding(name, room)   # vínculo POR SESSÃO: precede ./.coordme -> cwd compartilhado não colide
     _set_room(room_dir_for(room)); _ensure()
     text = body or ""
     extra = []
@@ -252,7 +295,8 @@ def _do_join(room, name, modifies=None, reserves=None, body=None):
         text = f"Sou **{name}**. Entrando na sala '{room}'."
     mid, _ = write_msg(name, "todos", "aviso", f"identidade: {name}", text, status="informativa")
     set_wake_cursor(name, int(time.time() * 1000))   # entra sem despejar histórico no auto-wake
-    print(f"ok: '{name}' vinculado à sala '{room}'  (./.coordme + ./.coordroom)  |  intro {mid}")
+    sess = "+sessão" if os.environ.get("CLAUDE_CODE_SESSION_ID") else ""
+    print(f"ok: '{name}' vinculado à sala '{room}'  (./.coordme + ./.coordroom {sess})  |  intro {mid}")
 
 def c_join(a):
     _do_join(a.room_name, a.as_ or _existing_me(), a.modifies, a.reserves, a.body)
