@@ -13,7 +13,8 @@ Identidade: --me NAME  |  $COORD_ME  |  <cwd>/.coordme  (escrito por `join`/`ini
 Sala ativa: --room NAME | $COORD_ROOM | <cwd>/.coordroom (escrito por `join`)  |  $COORD_DIR (path direto)
             dirs sob $COORD_ROOMS_BASE (default ~/.claude/coord-rooms/<sala>)
 
-Verbos: rooms join room init send inbox read open answer watch wake whoami help
+Verbos: rooms join room state | link unlink move nest unnest (DAG) | init send inbox
+        read open answer watch wake whoami help
 """
 import os, sys, time, glob, argparse, textwrap, re
 
@@ -75,16 +76,36 @@ def bind_room(args, silent=False):
         _set_room(os.environ["COORD_DIR"]); return BASE
     return None
 
-def _register_member(name):
-    # Registra (ou atualiza) o membro na sala ativa: nome + pasta (cwd) + sessão.
-    # É o que `coord rooms` usa pra listar "quem está em qual pasta".
+def _register_member(name, cwd=None):
+    # Registra (ou atualiza) o membro na sala ativa: nome + pasta + sessão + ts.
+    # É o que `rooms`/`state` usam pra listar "quem está em qual pasta".
     try:
         d = os.path.join(STA, "members"); os.makedirs(d, exist_ok=True)
         sess = os.environ.get("CLAUDE_CODE_SESSION_ID", "?")
         with open(os.path.join(d, name), "w", encoding="utf-8", newline="\n") as fh:
-            fh.write(f"name={name}\ncwd={os.getcwd()}\nsession={sess}\nts={int(time.time()*1000)}\n")
+            fh.write(f"name={name}\ncwd={cwd or os.getcwd()}\nsession={sess}\nts={int(time.time()*1000)}\n")
     except Exception:
         pass
+
+def _read_file(p):
+    return open(p, encoding="utf-8").read().strip() if os.path.isfile(p) else None
+
+# ---------- hierarquia de salas (DAG: aresta sala->pai) ----------
+def _parent_path(room):
+    return os.path.join(ROOMS_BASE, room, "state", "parent")
+
+def _read_parent(room):
+    return _read_file(_parent_path(room))
+
+def _is_ancestor(anc, room):
+    # True se 'anc' é ancestral de 'room' (subindo pelos parents). Guarda contra ciclo pré-existente.
+    seen, cur = set(), room
+    while cur and cur not in seen:
+        seen.add(cur)
+        cur = _read_parent(cur)
+        if cur == anc:
+            return True
+    return False
 
 def _room_members(room):
     d = os.path.join(ROOMS_BASE, room, "state", "members")
@@ -270,16 +291,101 @@ def c_room(a):
         return
     print(f"sala: {name}" + (f"  |  você: {me}" if me else "  |  (sem identidade — use --as no join)"))
 
+def _room_state(room):
+    # Estado de UMA sala p/ o DAG. Ativa a sala pra reusar all_msgs/parse/eff_status/cursor.
+    _set_room(room_dir_for(room))
+    parsed = [parse(p) for p in all_msgs()]
+    openq = sum(1 for m in parsed
+                if m.get("TIPO") == "pergunta" and eff_status(m["ID"], m.get("STATUS", "")) == "aberta")
+    members = _room_members(room)
+    for mem in members:
+        nm = mem.get("name", "")
+        cur = cursor(nm)
+        mem["last_seen_ts"] = mem.get("ts")
+        mem["unread_count"] = sum(1 for m in parsed
+                                  if m["_ms"] > cur and m.get("DE") != nm and m.get("PARA") in (nm, "todos"))
+    return {
+        "name": room,
+        "parent": _read_parent(room),                 # aresta sala->pai (DAG); None = raiz
+        "members": members,
+        "message_count": len(parsed),
+        "created_ts": min((m["_ms"] for m in parsed), default=None),
+        "last_activity_ts": max((m["_ms"] for m in parsed), default=None),
+        "open_questions": openq,
+    }
+
 def c_state(a):
-    # Saída machine-readable p/ o dashboard renderizar o DAG (salas + membros + pastas).
-    # Nós = salas e pastas (member.cwd); arestas = member -> sala.
+    # Saída machine-readable p/ o dashboard renderizar o DAG.
+    # Nós = salas + pastas (member.cwd); arestas = membro->sala e sala->parent.
+    # subrooms o cliente deriva agrupando por 'parent'.
     import json
     rooms = []
     if os.path.isdir(ROOMS_BASE):
         for r in sorted(os.listdir(ROOMS_BASE)):
             if os.path.isdir(os.path.join(ROOMS_BASE, r)):
-                rooms.append({"name": r, "members": _room_members(r)})
+                rooms.append(_room_state(r))
     print(json.dumps({"rooms_base": ROOMS_BASE, "rooms": rooms}, ensure_ascii=False))
+
+# ---------- mutações (chamadas pelo server do dashboard via CLI; exit!=0 + stderr em erro) ----------
+def _member_file(room, name):
+    return os.path.join(ROOMS_BASE, room, "state", "members", name)
+
+def _link_folder(path, room, name):
+    open(os.path.join(path, ".coordroom"), "w", encoding="utf-8", newline="\n").write(room)
+    open(os.path.join(path, ".coordme"),   "w", encoding="utf-8", newline="\n").write(name)
+    _set_room(room_dir_for(room)); _ensure(); _register_member(name, cwd=path)
+
+def c_link(a):
+    path = os.path.abspath(a.path)
+    room = a.room_name
+    if not ROOM_RE.match(room): sys.exit(f"erro: nome de sala inválido '{room}'.")
+    if not os.path.isdir(path): sys.exit(f"erro: pasta não existe: {path}")
+    name = a.as_ or _read_file(os.path.join(path, ".coordme")) or os.path.basename(path.rstrip("/\\")) or "agente"
+    _link_folder(path, room, name)
+    print(f"ok: pasta '{path}' linkada à sala '{room}' como '{name}'")
+
+def c_unlink(a):
+    path = os.path.abspath(a.path)
+    room = _read_file(os.path.join(path, ".coordroom"))
+    name = _read_file(os.path.join(path, ".coordme"))
+    if not room:
+        sys.exit(f"erro: pasta '{path}' não está linkada a nenhuma sala.")
+    cr = os.path.join(path, ".coordroom")
+    if os.path.isfile(cr): os.remove(cr)
+    if name and os.path.isfile(_member_file(room, name)):
+        os.remove(_member_file(room, name))     # some do DAG
+    print(f"ok: pasta '{path}' deslinkada da sala '{room}'")
+
+def c_move(a):
+    path = os.path.abspath(a.path)
+    room = a.room_name
+    if not ROOM_RE.match(room): sys.exit(f"erro: nome de sala inválido '{room}'.")
+    if not os.path.isdir(path): sys.exit(f"erro: pasta não existe: {path}")
+    old = _read_file(os.path.join(path, ".coordroom"))
+    name = _read_file(os.path.join(path, ".coordme")) or os.path.basename(path.rstrip("/\\")) or "agente"
+    if old and old != room and os.path.isfile(_member_file(old, name)):
+        os.remove(_member_file(old, name))
+    _link_folder(path, room, name)
+    print(f"ok: '{name}' movido {old or '(nenhuma)'} -> '{room}'")
+
+def c_nest(a):
+    sala, pai = a.sala, a.pai
+    if not ROOM_RE.match(sala) or not ROOM_RE.match(pai): sys.exit("erro: nome de sala inválido.")
+    if sala == pai: sys.exit("erro: uma sala não pode ser pai de si mesma.")
+    if not os.path.isdir(room_dir_for(sala)): sys.exit(f"erro: sala '{sala}' não existe.")
+    if not os.path.isdir(room_dir_for(pai)):  sys.exit(f"erro: sala pai '{pai}' não existe.")
+    if _is_ancestor(sala, pai):               # pai é descendente de sala -> ciclo
+        sys.exit(f"erro: ciclo — '{sala}' já é ancestral de '{pai}'. O DAG deve ser acíclico.")
+    d = os.path.join(room_dir_for(sala), "state"); os.makedirs(d, exist_ok=True)
+    open(os.path.join(d, "parent"), "w", encoding="utf-8", newline="\n").write(pai)
+    print(f"ok: sala '{sala}' aninhada sob '{pai}'")
+
+def c_unnest(a):
+    p = _parent_path(a.sala)
+    if os.path.isfile(p):
+        os.remove(p); print(f"ok: sala '{a.sala}' agora é raiz (sem pai)")
+    else:
+        print(f"(sala '{a.sala}' já era raiz)")
 
 # ---------- comandos ----------
 
@@ -457,6 +563,11 @@ def c_help(a):
       join <sala> --as <nome> [--modifies "X,Y"] [--reserves "Z"] [--body "..."]
             entra/cria a sala, vincula ao projeto (./.coordme + ./.coordroom), posta intro.
       room             mostra a sala vinculada a este cwd
+      state            JSON do DAG (salas+membros+métricas+hierarquia) — p/ o dashboard
+      link <pasta> <sala> [--as <nome>]   liga uma pasta a uma sala (dnd)
+      unlink <pasta>                      tira a pasta da sala
+      move <pasta> <sala>                 move a pasta p/ outra sala
+      nest <sala> <pai> | unnest <sala>   hierarquia sala->sala (DAG, sem ciclo)
       init <nome> --room <sala> [...]            alias de join (compat)
       send --to <nome|todos> --type <aviso|pergunta|resposta|decisao|bloqueio>
            --subject "..." [--ref ID] [--status ...] [--body "..." | stdin]
@@ -483,6 +594,13 @@ def main():
     s = sub.add_parser("rooms"); s.set_defaults(fn=c_rooms)
     s = sub.add_parser("room"); s.set_defaults(fn=c_room)
     s = sub.add_parser("state"); s.set_defaults(fn=c_state)   # JSON p/ o dashboard (DAG)
+    # mutações do DAG (drag-and-drop do dashboard via CLI)
+    s = sub.add_parser("link"); s.add_argument("path"); s.add_argument("room_name"); s.add_argument("--as", dest="as_")
+    s.set_defaults(fn=c_link)
+    s = sub.add_parser("unlink"); s.add_argument("path"); s.set_defaults(fn=c_unlink)
+    s = sub.add_parser("move"); s.add_argument("path"); s.add_argument("room_name"); s.set_defaults(fn=c_move)
+    s = sub.add_parser("nest"); s.add_argument("sala"); s.add_argument("pai"); s.set_defaults(fn=c_nest)
+    s = sub.add_parser("unnest"); s.add_argument("sala"); s.set_defaults(fn=c_unnest)
 
     s = sub.add_parser("join"); s.add_argument("room_name")
     s.add_argument("--as", dest="as_"); s.add_argument("--modifies"); s.add_argument("--reserves"); s.add_argument("--body")
