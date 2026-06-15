@@ -10,7 +10,7 @@ Modelo:
 Identidade: --me NAME  |  $COORD_ME  |  <cwd>/.coordme  (escrito por `init`)
 Sala (base): $COORD_DIR  |  default ~/.claude/coord-room  (estável, cross-project)
 
-Verbos: init send inbox read open answer watch whoami help
+Verbos: init send inbox read open answer watch wake whoami help
 """
 import os, sys, time, glob, argparse, textwrap
 
@@ -99,6 +99,18 @@ def cursor(name):
 
 def set_cursor(name, ms):
     open(os.path.join(STA, f"cursor-{name}"), "w").write(str(ms))
+
+# cursor de WAKE: separado do de leitura. Marca o que já foi *surfaceado* pelo
+# auto-wake (hook Stop), pra cada mensagem acordar o agente no máximo 1x — sem
+# isso o hook re-bloquearia o stop em loop. Independe de `read` (a msg segue
+# "não lida" no inbox até o agente realmente ler).
+def wake_cursor(name):
+    f = os.path.join(STA, f"wake-{name}")
+    return int(open(f).read().strip()) if os.path.isfile(f) else None
+
+def set_wake_cursor(name, ms):
+    _ensure()
+    open(os.path.join(STA, f"wake-{name}"), "w").write(str(ms))
 
 # ---------- escrita ----------
 def write_msg(de, para, tipo, assunto, body, ref=None, status=None):
@@ -272,6 +284,30 @@ def c_watch(a):
         except Exception:
             pass
 
+def c_wake(a):
+    # Auto-wake (chamado pelo hook Stop). Imprime mensagens NOVAS dirigidas a mim
+    # desde o último wake e avança o cursor de wake. Stdout vazio = nada novo.
+    # Primeira vez (sem cursor): prima em "agora" e não despeja histórico
+    # (semântica tail -n 0); o backstop de histórico é o hook UserPromptSubmit.
+    me = me_from(a)
+    cur = wake_cursor(me)
+    if cur is None:
+        set_wake_cursor(me, int(time.time() * 1000))
+        return
+    new = []
+    for p in all_msgs():
+        m = parse(p)
+        if m["_ms"] <= cur: continue
+        if m.get("DE") == me: continue
+        if m.get("PARA") not in (me, "todos"): continue
+        new.append(m)
+    if not new:
+        return
+    set_wake_cursor(me, max(m["_ms"] for m in new))
+    print(f"📨 coord: {len(new)} mensagem(ns) nova(s) para {me}:")
+    for m in new:
+        print("  " + _fmt_line(m))
+
 def c_whoami(a):
     print(me_from(a))
 
@@ -288,6 +324,7 @@ def c_help(a):
       open             perguntas abertas dirigidas a você
       answer <ID> [--to X] [--body "..."|stdin]   responde E fecha a pergunta
       watch            tail nativo do feed (rodar como background task)
+      wake             [hook Stop] surfaceia msgs novas pra mim e avança cursor de wake
       whoami / help
 
     Identidade: --me NAME | $COORD_ME | ./.coordme   |   Base: $COORD_DIR | dir do script
@@ -314,6 +351,7 @@ def main():
     s = sub.add_parser("answer"); s.add_argument("id"); s.add_argument("--to"); s.add_argument("--body")
     s.set_defaults(fn=c_answer)
     s = sub.add_parser("watch"); s.set_defaults(fn=c_watch)
+    s = sub.add_parser("wake"); s.set_defaults(fn=c_wake)
     s = sub.add_parser("whoami"); s.set_defaults(fn=c_whoami)
     s = sub.add_parser("help"); s.set_defaults(fn=c_help)
 

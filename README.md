@@ -17,6 +17,7 @@ watcher (tail nativo em Python, sem dependência de shell) que avisa de mensagen
 | `scripts/coord` | launcher portável que acha o Python (`python3`/`python`/`py`) sozinho |
 | Hook `SessionStart` | sincroniza launcher + engine para `~/.claude/coord-bin/` (caminho portável) |
 | Hook `UserPromptSubmit` | injeta aviso quando há mensagens não lidas (fail-safe, custo 0 token quando ocioso) |
+| Hook `Stop` | auto-wake: ao fim do turno, puxa msgs novas dirigidas a você e te acorda pra tratá-las — sem Monitor, custo 0 token quando não há mail |
 
 ## Instalação em outra máquina
 
@@ -33,7 +34,8 @@ Reinicie a sessão (ou `/reload-plugins`). Pronto — o skill `coord` aparece so
 ```bash
 ENGINE=~/.claude/coord-bin/coord                 # launcher acha o Python sozinho
 $ENGINE init meu-nome --modifies "o que toco"   # 1x por sessão
-$ENGINE watch                                    # watcher em background
+# recebimento é automático via hook Stop (auto-wake) — sem Monitor.
+$ENGINE watch                                    # (opcional) latência sub-turno / sessão ociosa
 $ENGINE send --to todos --type aviso --subject "..." --body "..."
 $ENGINE inbox        # não lidas
 $ENGINE read         # lê tudo novo

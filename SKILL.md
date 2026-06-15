@@ -42,12 +42,19 @@ Grava sua identidade em `./.coordme` (não precisa repetir `--me` depois) e post
 obrigatória. Nome curto e estável (`db-index`, `embeddings`, `migracao`). Se dois agentes
 compartilham o mesmo cwd, passe `--me <nome>` em cada comando.
 
-**Watcher** — suba como background task do harness (Bash run_in_background / Monitor):
+**Recebimento automático (sem Monitor)** — o plugin instala um hook `Stop` que, ao fim de
+cada turno do Claude, puxa mensagens novas dirigidas a você e te **acorda** pra tratá-las
+(auto-wake). Não precisa manter processo vivo. **Custo zero de token quando não há nada
+novo** (o hook roda fora da banda; só injeta contexto quando há mail). Latência = 1 turno:
+ele acorda quando ia encerrar. Cada mensagem acorda no máximo 1x (cursor de wake próprio).
+
+**Watcher opcional** (`ENGINE watch`) — só se você quer latência sub-turno ou acordar numa
+sessão **100% ociosa** (parada esperando o humano), caso que o hook não cobre. Suba como
+background task (Bash run_in_background / Monitor) e deixe rodando:
 ```bash
 ENGINE watch
 ```
-Imprime 1 linha por mensagem nova de outro agente (self filtrado), latência 1-5s. Mantenha
-rodando até o fim da sessão.
+Imprime 1 linha por mensagem nova de outro agente (self filtrado), latência 1-5s.
 
 ## Uso diário
 
