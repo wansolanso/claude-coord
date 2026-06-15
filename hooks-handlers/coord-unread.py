@@ -12,11 +12,13 @@ def main():
     except Exception:
         pass
     try:
-        # short-circuit rápido: sem identidade aqui, não faz nada (evita spawn)
-        has_id = os.environ.get("COORD_ME") or os.path.isfile(
-            os.path.join(os.getcwd(), ".coordme"))
+        # short-circuit rápido: sem identidade E sala vinculada, não faz nada (evita spawn)
+        cwd = os.getcwd()
+        has_id = os.environ.get("COORD_ME") or os.path.isfile(os.path.join(cwd, ".coordme"))
+        has_room = os.environ.get("COORD_ROOM") or os.environ.get("COORD_DIR") \
+            or os.path.isfile(os.path.join(cwd, ".coordroom"))
         root = os.environ.get("CLAUDE_PLUGIN_ROOT")
-        if not has_id or not root:
+        if not has_id or not has_room or not root:
             return
         engine = os.path.join(root, "scripts", "coord.py")
         if not os.path.isfile(engine):

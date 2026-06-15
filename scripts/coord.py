@@ -3,22 +3,35 @@
 coord - coordenação entre agentes Claude. Conflict-free, token-mínimo.
 
 Modelo:
-  - Cada mensagem = 1 arquivo em messages/  (nome único -> zero conflito de escrita)
+  - SALAS são entidades separadas: cada sala = 1 diretório próprio. Dois Claudes só se
+    enxergam na MESMA sala. Você se vincula a uma sala por projeto com `join`.
+  - Cada mensagem = 1 arquivo em <sala>/messages/  (nome único -> zero conflito de escrita)
   - feed.log = 1 linha por mensagem (append atômico) -> alimenta o watcher (tail nativo em Python)
-  - state/  = cursores de leitura por-agente + overrides de status (open->answered)
+  - state/  = cursores por-agente + overrides de status + registro de membros (pasta de cada)
 
-Identidade: --me NAME  |  $COORD_ME  |  <cwd>/.coordme  (escrito por `init`)
-Sala (base): $COORD_DIR  |  default ~/.claude/coord-room  (estável, cross-project)
+Identidade: --me NAME  |  $COORD_ME  |  <cwd>/.coordme  (escrito por `join`/`init`)
+Sala ativa: --room NAME | $COORD_ROOM | <cwd>/.coordroom (escrito por `join`)  |  $COORD_DIR (path direto)
+            dirs sob $COORD_ROOMS_BASE (default ~/.claude/coord-rooms/<sala>)
 
-Verbos: init send inbox read open answer watch wake whoami help
+Verbos: rooms join room init send inbox read open answer watch wake whoami help
 """
-import os, sys, time, glob, argparse, textwrap
+import os, sys, time, glob, argparse, textwrap, re
 
-BASE = os.environ.get("COORD_DIR") or os.path.join(os.path.expanduser("~"), ".claude", "coord-room")
-MSG  = os.path.join(BASE, "messages")
-STA  = os.path.join(BASE, "state")
-STT  = os.path.join(STA, "status")
-FEED = os.path.join(BASE, "feed.log")
+HOME = os.path.expanduser("~")
+# Salas são entidades separadas, cada uma um diretório sob esta base.
+ROOMS_BASE = os.environ.get("COORD_ROOMS_BASE") or os.path.join(HOME, ".claude", "coord-rooms")
+ROOM_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+
+# Caminhos da sala ATIVA — preenchidos por _set_room()/bind_room() a cada comando.
+BASE = MSG = STA = STT = FEED = None
+
+def _set_room(d):
+    global BASE, MSG, STA, STT, FEED
+    BASE = d
+    MSG  = os.path.join(d, "messages")
+    STA  = os.path.join(d, "state")
+    STT  = os.path.join(STA, "status")
+    FEED = os.path.join(d, "feed.log")
 
 def _utf8_io():
     # stdout/stderr em UTF-8 — sem isso, `read`/`inbox`/`watch` quebram com
@@ -34,7 +47,67 @@ def _ensure():
     for d in (MSG, STA, STT):
         os.makedirs(d, exist_ok=True)
 
+# ---------- salas ----------
+def _read_cwd_file(fn):
+    p = os.path.join(os.getcwd(), fn)
+    return open(p, encoding="utf-8").read().strip() if os.path.isfile(p) else None
+
+def room_name_from(args):
+    if getattr(args, "room", None):
+        return args.room
+    if os.environ.get("COORD_ROOM"):
+        return os.environ["COORD_ROOM"]
+    return _read_cwd_file(".coordroom")
+
+def room_dir_for(name):
+    return os.path.join(ROOMS_BASE, name)
+
+def bind_room(args, silent=False):
+    """Resolve a sala ATIVA e seta os globals. Retorna o dir, ou None se não vinculada."""
+    name = room_name_from(args)
+    if name:
+        if not ROOM_RE.match(name):
+            if silent: return None
+            sys.exit(f"erro: nome de sala inválido '{name}' (letras/números/.-_, até 64).")
+        _set_room(room_dir_for(name)); return BASE
+    if os.environ.get("COORD_DIR"):              # back-compat: caminho direto de sala
+        _set_room(os.environ["COORD_DIR"]); return BASE
+    return None
+
+def _register_member(name):
+    # Registra (ou atualiza) o membro na sala ativa: nome + pasta (cwd) + sessão.
+    # É o que `coord rooms` usa pra listar "quem está em qual pasta".
+    try:
+        d = os.path.join(STA, "members"); os.makedirs(d, exist_ok=True)
+        sess = os.environ.get("CLAUDE_CODE_SESSION_ID", "?")
+        with open(os.path.join(d, name), "w", encoding="utf-8") as fh:
+            fh.write(f"name={name}\ncwd={os.getcwd()}\nsession={sess}\nts={int(time.time()*1000)}\n")
+    except Exception:
+        pass
+
+def _room_members(room):
+    d = os.path.join(ROOMS_BASE, room, "state", "members")
+    out = []
+    if os.path.isdir(d):
+        for f in sorted(os.listdir(d)):
+            info = {"name": f}
+            try:
+                for line in open(os.path.join(d, f), encoding="utf-8"):
+                    if "=" in line:
+                        k, _, v = line.partition("="); info[k.strip()] = v.strip()
+            except Exception:
+                pass
+            out.append(info)
+    return out
+
 # ---------- identidade ----------
+def _existing_me():
+    return _read_cwd_file(".coordme")
+
+def _me_safe(args):
+    # como me_from, mas NUNCA sai (pro hook/wake silencioso).
+    return getattr(args, "me", None) or os.environ.get("COORD_ME") or _existing_me()
+
 def me_from(args):
     if getattr(args, "me", None):
         return args.me
@@ -43,7 +116,7 @@ def me_from(args):
     p = os.path.join(os.getcwd(), ".coordme")
     if os.path.isfile(p):
         return open(p, encoding="utf-8").read().strip()
-    sys.exit("erro: não sei quem você é. Rode `coord init <nome>` ou passe --me <nome>.")
+    sys.exit("erro: não sei quem você é. Rode `coord join <sala> --as <nome>` ou passe --me <nome>.")
 
 # ---------- ids ----------
 def next_seq(name):
@@ -133,22 +206,68 @@ def write_msg(de, para, tipo, assunto, body, ref=None, status=None):
     feed = f"FROM={de} TO={para} TYPE={tipo} STATUS={status} ID={mid} SUBJ={assunto}\n"
     with open(FEED, "a", encoding="utf-8") as fh:  # append pequeno = atômico
         fh.write(feed)
+    _register_member(de)                # mantém a pasta/sessão do agente atualizada
     return mid, ms
 
-# ---------- comandos ----------
-def c_init(a):
-    name = a.name
-    open(os.path.join(os.getcwd(), ".coordme"), "w", encoding="utf-8").write(name)
-    body = a.body or ""
+# ---------- comandos: salas ----------
+def _do_join(room, name, modifies=None, reserves=None, body=None):
+    if not room or not ROOM_RE.match(room):
+        sys.exit(f"erro: nome de sala inválido '{room}' (letras/números/.-_, até 64).")
+    if not name:
+        sys.exit("erro: informe a identidade. use: coord join <sala> --as <nome>")
+    cwd = os.getcwd()
+    open(os.path.join(cwd, ".coordroom"), "w", encoding="utf-8").write(room)  # vincula a sala ao projeto
+    open(os.path.join(cwd, ".coordme"),   "w", encoding="utf-8").write(name)
+    _set_room(room_dir_for(room)); _ensure()
+    text = body or ""
     extra = []
-    if a.modifies:  extra.append(f"**Modifico:** {a.modifies}")
-    if a.reserves:  extra.append(f"**Reservo p/ outros:** {a.reserves}")
-    if extra: body = (body + "\n\n" + "\n".join(extra)).strip()
-    if not body:
-        body = f"Sou **{name}**. Entrando na sessão de coordenação."
-    mid, _ = write_msg(name, "todos", "aviso", f"identidade: {name}", body, status="informativa")
-    print(f"ok: identidade '{name}' salva em ./.coordme  |  intro postada {mid}")
-    print(f"watcher: python \"{__file__}\" watch")
+    if modifies: extra.append(f"**Modifico:** {modifies}")
+    if reserves: extra.append(f"**Reservo p/ outros:** {reserves}")
+    if extra: text = (text + "\n\n" + "\n".join(extra)).strip()
+    if not text:
+        text = f"Sou **{name}**. Entrando na sala '{room}'."
+    mid, _ = write_msg(name, "todos", "aviso", f"identidade: {name}", text, status="informativa")
+    set_wake_cursor(name, int(time.time() * 1000))   # entra sem despejar histórico no auto-wake
+    print(f"ok: '{name}' vinculado à sala '{room}'  (./.coordme + ./.coordroom)  |  intro {mid}")
+
+def c_join(a):
+    _do_join(a.room_name, a.as_ or _existing_me(), a.modifies, a.reserves, a.body)
+
+def c_init(a):   # back-compat: agora exige sala
+    if not getattr(a, "room", None):
+        sys.exit("erro: agora toda identidade entra numa SALA.\n"
+                 "      use: coord join <sala> --as <nome>   (veja `coord rooms`)\n"
+                 "      ou:  coord init <nome> --room <sala>")
+    _do_join(a.room, a.name, a.modifies, a.reserves, a.body)
+
+def c_rooms(a):
+    cur = room_name_from(a)
+    rooms = sorted(d for d in os.listdir(ROOMS_BASE)
+                   if os.path.isdir(os.path.join(ROOMS_BASE, d))) if os.path.isdir(ROOMS_BASE) else []
+    if not rooms:
+        print(f"nenhuma sala em {ROOMS_BASE}.")
+        print("crie/entre com: coord join <sala> --as <nome>")
+        if cur: print(f'(seu cwd está marcado p/ a sala "{cur}", ainda vazia)')
+        return
+    print(f"salas em {ROOMS_BASE}:")
+    for r in rooms:
+        ms = _room_members(r)
+        mark = "   <- você está aqui" if r == cur else ""
+        print(f'  {r}  [{len(ms)} agente(s)]{mark}')
+        for m in ms:
+            print(f'      - {m.get("name","?")}  ({m.get("cwd","?")})')
+    if cur and cur not in rooms:
+        print(f'(seu cwd está marcado p/ a sala "{cur}", ainda sem mensagens)')
+
+def c_room(a):
+    name = room_name_from(a); me = _existing_me()
+    if not name:
+        print("nenhuma sala vinculada neste cwd.")
+        print("rode `coord rooms` e `coord join <sala> --as <nome>`.")
+        return
+    print(f"sala: {name}" + (f"  |  você: {me}" if me else "  |  (sem identidade — use --as no join)"))
+
+# ---------- comandos ----------
 
 def c_send(a):
     de = me_from(a)
@@ -289,7 +408,9 @@ def c_wake(a):
     # desde o último wake e avança o cursor de wake. Stdout vazio = nada novo.
     # Primeira vez (sem cursor): prima em "agora" e não despeja histórico
     # (semântica tail -n 0); o backstop de histórico é o hook UserPromptSubmit.
-    me = me_from(a)
+    me = _me_safe(a)
+    if not me:                  # sem identidade -> hook fica silencioso
+        return
     cur = wake_cursor(me)
     if cur is None:
         set_wake_cursor(me, int(time.time() * 1000))
@@ -315,29 +436,45 @@ def c_help(a):
     print(textwrap.dedent("""\
     coord - coordenação entre agentes Claude (conflict-free, token-mínimo)
 
-      init <nome> [--modifies "X,Y"] [--reserves "Z"] [--body "..."]
-            registra identidade (grava ./.coordme) e posta a intro obrigatória.
+    SALAS são separadas — você só fala na sala em que entrou. Sem sala vinculada,
+    send/inbox/wake recusam (nada vaza p/ esforço alheio).
+
+      rooms            lista as salas + agentes e a PASTA de cada um
+      join <sala> --as <nome> [--modifies "X,Y"] [--reserves "Z"] [--body "..."]
+            entra/cria a sala, vincula ao projeto (./.coordme + ./.coordroom), posta intro.
+      room             mostra a sala vinculada a este cwd
+      init <nome> --room <sala> [...]            alias de join (compat)
       send --to <nome|todos> --type <aviso|pergunta|resposta|decisao|bloqueio>
            --subject "..." [--ref ID] [--status ...] [--body "..." | stdin]
       inbox            lista não lidas (não consome)
       read [ID]        abre msg(s); sem ID = todas não lidas + marca lido
       open             perguntas abertas dirigidas a você
       answer <ID> [--to X] [--body "..."|stdin]   responde E fecha a pergunta
-      watch            tail nativo do feed (rodar como background task)
+      watch            tail nativo do feed da sala (rodar como background task)
       wake             [hook Stop] surfaceia msgs novas pra mim e avança cursor de wake
       whoami / help
 
-    Identidade: --me NAME | $COORD_ME | ./.coordme   |   Base: $COORD_DIR | dir do script
+    Identidade: --me NAME | $COORD_ME | ./.coordme
+    Sala:       --room NAME | $COORD_ROOM | ./.coordroom | $COORD_DIR (path direto)
+                dirs sob $COORD_ROOMS_BASE (default ~/.claude/coord-rooms/<sala>)
     """))
 
 def main():
     _utf8_io()
     p = argparse.ArgumentParser(add_help=False)
     p.add_argument("--me")
+    p.add_argument("--room")
     sub = p.add_subparsers(dest="cmd")
 
+    s = sub.add_parser("rooms"); s.set_defaults(fn=c_rooms)
+    s = sub.add_parser("room"); s.set_defaults(fn=c_room)
+
+    s = sub.add_parser("join"); s.add_argument("room_name")
+    s.add_argument("--as", dest="as_"); s.add_argument("--modifies"); s.add_argument("--reserves"); s.add_argument("--body")
+    s.set_defaults(fn=c_join)
+
     s = sub.add_parser("init"); s.add_argument("name")
-    s.add_argument("--modifies"); s.add_argument("--reserves"); s.add_argument("--body")
+    s.add_argument("--room"); s.add_argument("--modifies"); s.add_argument("--reserves"); s.add_argument("--body")
     s.set_defaults(fn=c_init)
 
     s = sub.add_parser("send")
@@ -356,8 +493,17 @@ def main():
     s = sub.add_parser("help"); s.set_defaults(fn=c_help)
 
     a = p.parse_args()
-    if not getattr(a, "cmd", None):
+    cmd = getattr(a, "cmd", None)
+    if not cmd:
         c_help(a); return
+    # comandos que tocam uma sala: precisam de sala vinculada (senão recusam / no-op p/ wake)
+    if cmd in {"send", "inbox", "read", "open", "answer", "watch", "wake"}:
+        silent = (cmd == "wake")
+        if bind_room(a, silent=silent) is None:
+            if silent:
+                return                       # hook fica silencioso quando não há sala
+            sys.exit("erro: nenhuma sala vinculada neste projeto.\n"
+                     "      rode `coord rooms` e `coord join <sala> --as <nome>` primeiro.")
     a.fn(a)
 
 if __name__ == "__main__":

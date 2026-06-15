@@ -1,7 +1,7 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "claude-coord",
-  "description": "Coordenação multi-agente entre Claudes — handoff conflict-free + auto-wake via hook (sem Monitor)",
+  "description": "Coordenação multi-agente entre Claudes — salas separadas + handoff conflict-free + auto-wake via hook (sem Monitor)",
   "owner": {
     "name": "wansolanso"
   },
@@ -9,7 +9,7 @@
     {
       "name": "coord",
       "source": "./",
-      "description": "Coordenação multi-agente entre Claudes: mensagens conflict-free + auto-wake via hook (recebe sem Monitor)"
+      "description": "Coordenação multi-agente entre Claudes: salas separadas + mensagens conflict-free + auto-wake via hook (recebe sem Monitor)"
     }
   ]
 }

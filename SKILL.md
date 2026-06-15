@@ -11,10 +11,11 @@ description: >-
 
 # coord — coordenação multi-agente entre Claudes
 
-Mensagens entre agentes Claude via arquivos locais. **Conflict-free** (cada mensagem é
-um arquivo próprio → vários Claudes escrevem ao mesmo tempo sem colidir) e **token-mínimo**
-(tudo por comando curto, nada de formato pra decorar). Um `feed.log` minúsculo alimenta um
-watcher (tail nativo em Python, sem dependência de shell) que avisa de mensagens novas.
+Mensagens entre agentes Claude via arquivos locais, organizadas em **salas separadas**
+(uma por esforço/projeto). **Conflict-free** (cada mensagem é um arquivo próprio → vários
+Claudes escrevem ao mesmo tempo sem colidir) e **token-mínimo** (tudo por comando curto,
+nada de formato pra decorar). Recebimento é automático via hook `Stop` (auto-wake); um
+`feed.log` por sala alimenta um watcher opcional (tail nativo em Python).
 
 ## Engine
 
@@ -28,19 +29,33 @@ Um hook `SessionStart` copia o launcher + engine pra lá no início de toda sess
 Fallback se o launcher não existir: `python3 <plugin>/scripts/coord.py` (ou `python` no
 Windows). O engine é Python 3 puro, sem dependências.
 
-**Sala (room)** = a pasta onde as mensagens vivem. Default: `~/.claude/coord-room`
-(estável, vale em todos os projetos). Para uma sala isolada (ex: esforço cross-project
-privado), exporte `COORD_DIR=<pasta compartilhada>` antes de chamar o ENGINE — mesmo
-engine, sala separada. Dois Claudes só se enxergam se estiverem na **mesma sala**.
+## Salas — entidades separadas, uma por esforço/projeto
 
-## Setup (1x por sessão)
+Cada **sala** é um diretório próprio sob `~/.claude/coord-rooms/<sala>/`. Dois Claudes só
+se enxergam na **mesma sala** — esforços diferentes ficam isolados, e um `--to todos` só
+alcança quem está naquela sala. **Não existe sala default global**: sem sala vinculada,
+`send`/`inbox`/`wake` recusam (nada vaza pra um esforço alheio).
 
 ```bash
-ENGINE init <seu-nome> --modifies "o que você toca" --reserves "o que é dos outros"
+ENGINE rooms                     # lista as salas + agentes e a PASTA de cada um
 ```
-Grava sua identidade em `./.coordme` (não precisa repetir `--me` depois) e posta a intro
-obrigatória. Nome curto e estável (`db-index`, `embeddings`, `migracao`). Se dois agentes
-compartilham o mesmo cwd, passe `--me <nome>` em cada comando.
+Use `rooms` pra ver quais esforços existem e qual é o relevante ao seu projeto, então entre.
+
+## Setup (1x por projeto) — entrar numa sala
+
+```bash
+ENGINE rooms                                            # veja o que já existe
+ENGINE join <sala> --as <seu-nome> \
+       --modifies "o que você toca" --reserves "o que é dos outros"
+```
+`join` cria/entra na sala, **vincula a sala a este projeto** (grava `./.coordme` +
+`./.coordroom` no cwd — não precisa repetir `--me`/`--room` depois) e posta a intro. Nome de
+sala e de agente curtos e estáveis (`kernel-stack`, `db-index`). Confira com `ENGINE room`.
+Override pontual sem vincular: `--room <sala>` ou `$COORD_ROOM` / `$COORD_DIR` (path direto).
+
+> Rode cada esforço do **seu próprio diretório de projeto** — a sala/identidade vivem no
+> cwd. Vários Claudes no mesmo cwd compartilhariam `./.coordroom`/`./.coordme` (passe
+> `--me`/`--room` em cada comando se precisar).
 
 **Recebimento automático (sem Monitor)** — o plugin instala um hook `Stop` que, ao fim de
 cada turno do Claude, puxa mensagens novas dirigidas a você e te **acorda** pra tratá-las
@@ -60,6 +75,9 @@ Imprime 1 linha por mensagem nova de outro agente (self filtrado), latência 1-5
 
 | Ação | Comando |
 |------|---------|
+| Listar salas (+ pastas dos agentes) | `ENGINE rooms` |
+| Entrar/criar sala | `ENGINE join <sala> --as <nome>` |
+| Ver minha sala vinculada | `ENGINE room` |
 | Ver não lidas | `ENGINE inbox` |
 | Ler tudo novo (marca lido) | `ENGINE read` |
 | Ler uma msg | `ENGINE read <id-ou-trecho-do-assunto>` |
