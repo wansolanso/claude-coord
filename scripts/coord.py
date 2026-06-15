@@ -113,16 +113,35 @@ def bind_room(args, silent=False):
         _set_room(os.environ["COORD_DIR"]); return BASE
     return None
 
-def _register_member(name, cwd=None):
+def _register_member(name, cwd=None, session=None, ts=None):
     # Registra (ou atualiza) o membro na sala ativa: nome + pasta + sessão + ts.
-    # É o que `rooms`/`state` usam pra listar "quem está em qual pasta".
+    # session=None -> usa CLAUDE_CODE_SESSION_ID do CHAMADOR (correto p/ send/join: o
+    # chamador É o agente). link/move passam a session REAL preservada do agente — senão
+    # estampariam a sessão da dashboard num agente alheio (anomalia reportada).
     try:
         d = os.path.join(STA, "members"); os.makedirs(d, exist_ok=True)
-        sess = os.environ.get("CLAUDE_CODE_SESSION_ID", "?")
+        if session is None:
+            session = os.environ.get("CLAUDE_CODE_SESSION_ID", "?")
         with open(os.path.join(d, name), "w", encoding="utf-8", newline="\n") as fh:
-            fh.write(f"name={name}\ncwd={cwd or os.getcwd()}\nsession={sess}\nts={int(time.time()*1000)}\n")
+            fh.write(f"name={name}\ncwd={cwd or os.getcwd()}\nsession={session}\nts={ts or int(time.time()*1000)}\n")
     except Exception:
         pass
+
+def _find_member(name):
+    # Procura o registro atual do agente em qualquer sala (p/ preservar session/ts num move/link).
+    if os.path.isdir(ROOMS_BASE):
+        for r in os.listdir(ROOMS_BASE):
+            mf = os.path.join(ROOMS_BASE, r, "state", "members", name)
+            if os.path.isfile(mf):
+                d = {}
+                try:
+                    for line in open(mf, encoding="utf-8"):
+                        if "=" in line:
+                            k, _, v = line.partition("="); d[k.strip()] = v.strip()
+                except Exception:
+                    pass
+                return d
+    return None
 
 def _read_file(p):
     return open(p, encoding="utf-8").read().strip() if os.path.isfile(p) else None
@@ -403,10 +422,15 @@ def c_messages(a):
 def _member_file(room, name):
     return os.path.join(ROOMS_BASE, room, "state", "members", name)
 
-def _link_folder(path, room, name):
+def _link_folder(path, room, name, prev=None):
+    # prev = registro existente do agente (se houver) -> preserva session/ts reais.
+    # Em link/move o CHAMADOR (dashboard) NÃO é o agente: nunca estampa a sessão dele.
     open(os.path.join(path, ".coordroom"), "w", encoding="utf-8", newline="\n").write(room)
     open(os.path.join(path, ".coordme"),   "w", encoding="utf-8", newline="\n").write(name)
-    _set_room(room_dir_for(room)); _ensure(); _register_member(name, cwd=path)
+    _set_room(room_dir_for(room)); _ensure()
+    _register_member(name, cwd=path,
+                     session=(prev or {}).get("session", "?"),
+                     ts=(prev or {}).get("ts"))
 
 def c_link(a):
     path = os.path.abspath(a.path)
@@ -414,7 +438,7 @@ def c_link(a):
     if not ROOM_RE.match(room): sys.exit(f"erro: nome de sala inválido '{room}'.")
     if not os.path.isdir(path): sys.exit(f"erro: pasta não existe: {path}")
     name = a.as_ or _read_file(os.path.join(path, ".coordme")) or os.path.basename(path.rstrip("/\\")) or "agente"
-    _link_folder(path, room, name)
+    _link_folder(path, room, name, _find_member(name))
     print(f"ok: pasta '{path}' linkada à sala '{room}' como '{name}'")
 
 def c_unlink(a):
@@ -436,9 +460,10 @@ def c_move(a):
     if not os.path.isdir(path): sys.exit(f"erro: pasta não existe: {path}")
     old = _read_file(os.path.join(path, ".coordroom"))
     name = _read_file(os.path.join(path, ".coordme")) or os.path.basename(path.rstrip("/\\")) or "agente"
+    prev = _find_member(name)                # captura session/ts ANTES de remover o antigo
     if old and old != room and os.path.isfile(_member_file(old, name)):
         os.remove(_member_file(old, name))
-    _link_folder(path, room, name)
+    _link_folder(path, room, name, prev)
     print(f"ok: '{name}' movido {old or '(nenhuma)'} -> '{room}'")
 
 def c_nest(a):
