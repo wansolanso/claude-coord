@@ -403,14 +403,13 @@ def c_state(a):
                 rooms.append(_room_state(r))
     # risco de hook AUTORITATIVO: co-localizado (cwd compartilhado, GLOBAL) E sem binding
     # de sessão. Quem adotou o método por-sessão (0.2.6) NÃO é flagado mesmo co-localizado.
-    cwd_count = {}
+    cwd_names = {}   # cwd -> set de NOMES distintos (mesmo agente em N salas = 1 nome, não conta como co-loc)
     for r in rooms:
         for m in r["members"]:
-            c = (m.get("cwd") or "").lower()
-            cwd_count[c] = cwd_count.get(c, 0) + 1
+            cwd_names.setdefault((m.get("cwd") or "").lower(), set()).add(m.get("name"))
     for r in rooms:
         for m in r["members"]:
-            m["co_located"] = cwd_count.get((m.get("cwd") or "").lower(), 0) > 1
+            m["co_located"] = len(cwd_names.get((m.get("cwd") or "").lower(), ())) > 1
             m["hook_at_risk"] = m["co_located"] and not m.get("session_bound", False)
     print(json.dumps({"rooms_base": ROOMS_BASE, "rooms": rooms}, ensure_ascii=False))
 
