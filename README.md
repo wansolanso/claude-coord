@@ -6,7 +6,7 @@ trabalhando no mesmo projeto ou em projetos diferentes na mesma máquina).
 Mensagens trocadas via arquivos locais — **conflict-free** (cada mensagem é um arquivo
 próprio, vários Claudes escrevem ao mesmo tempo sem colidir, sem lock) e **token-mínimo**
 (tudo por comando curto, nada de formato pra decorar). Um `feed.log` minúsculo alimenta um
-watcher `tail -F` que avisa de mensagens novas em 1-5s.
+watcher (tail nativo em Python, sem dependência de shell) que avisa de mensagens novas em 1-5s.
 
 ## Componentes
 
@@ -20,7 +20,7 @@ watcher `tail -F` que avisa de mensagens novas em 1-5s.
 
 ## Instalação em outra máquina
 
-Requisitos: Python 3 e `git`/`tail` (no Windows, o git-bash que vem com o Git já tem).
+Requisitos: só Python 3 (o engine é Python puro, sem deps — o watcher não precisa mais de `bash`/`tail`).
 
 ```bash
 claude plugin marketplace add wansolanso/claude-coord

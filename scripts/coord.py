@@ -4,7 +4,7 @@ coord - coordenação entre agentes Claude. Conflict-free, token-mínimo.
 
 Modelo:
   - Cada mensagem = 1 arquivo em messages/  (nome único -> zero conflito de escrita)
-  - feed.log = 1 linha por mensagem (append atômico) -> alimenta o watcher `tail -F`
+  - feed.log = 1 linha por mensagem (append atômico) -> alimenta o watcher (tail nativo em Python)
   - state/  = cursores de leitura por-agente + overrides de status (open->answered)
 
 Identidade: --me NAME  |  $COORD_ME  |  <cwd>/.coordme  (escrito por `init`)
@@ -19,6 +19,16 @@ MSG  = os.path.join(BASE, "messages")
 STA  = os.path.join(BASE, "state")
 STT  = os.path.join(STA, "status")
 FEED = os.path.join(BASE, "feed.log")
+
+def _utf8_io():
+    # stdout/stderr em UTF-8 — sem isso, `read`/`inbox`/`watch` quebram com
+    # UnicodeEncodeError no Windows (console default = cp1252) quando uma msg
+    # tem caractere fora do cp1252. Evita ter de exportar PYTHONIOENCODING.
+    for s in (sys.stdout, sys.stderr):
+        try:
+            s.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
 
 def _ensure():
     for d in (MSG, STA, STT):
@@ -209,15 +219,58 @@ def c_answer(a):
     open(status_path(q["ID"]), "w", encoding="utf-8").write("respondida")  # flip da origem (override, não edita o arquivo)
     print(f"respondido {mid}  | {q['ID']} -> respondida")
 
+def _stat_key(path):
+    try:
+        st = os.stat(path)
+        return (st.st_dev, st.st_ino)          # detecta troca de arquivo (rotação)
+    except OSError:
+        return None
+
 def c_watch(a):
+    # Tail nativo em Python: NÃO depende de bash/tail/grep e funciona com caminho
+    # Windows (o `bash -c 'tail -F "C:\...\feed.log"'` antigo morria: o tail do
+    # git-bash não abria o path com backslash, o erro ia pro 2>/dev/null e o pipe
+    # fechava -> banner + "stream ended"). Self filtrado, flush por linha.
     me = me_from(a)
+    _ensure()
     if not os.path.isfile(FEED):
-        open(FEED, "a").close()
-    import subprocess
-    cmd = ["bash", "-c",
-           f'tail -n 0 -F "{FEED}" 2>/dev/null | grep --line-buffered -Ev "^FROM={me} "']
+        open(FEED, "a", encoding="utf-8").close()
+    prefix = f"FROM={me} "
     print(f"[watch] {me}: ouvindo feed, ignorando self. Ctrl-C p/ sair.", flush=True)
-    os.execvp(cmd[0], cmd)
+    f = open(FEED, "rb")                         # binário: tell() = offset real em bytes
+    f.seek(0, os.SEEK_END)                       # tail -n 0: só mensagens novas
+    key = _stat_key(FEED)
+    try:
+        while True:
+            pos = f.tell()
+            raw = f.readline()
+            if raw and raw.endswith(b"\n"):       # linha completa
+                line = raw.decode("utf-8", "replace")
+                if not line.startswith(prefix):   # filtra self
+                    sys.stdout.write(line)
+                    sys.stdout.flush()
+                continue
+            if raw:
+                f.seek(pos)                       # linha parcial: rebobina até completar
+            time.sleep(1.0)                       # sem dados: poll + checa rotação
+            try:
+                rotated = _stat_key(FEED) != key or os.path.getsize(FEED) < f.tell()
+            except OSError:
+                rotated = False                   # feed sumiu momentaneamente
+            if rotated:
+                try:
+                    f.close()
+                except Exception:
+                    pass
+                f = open(FEED, "rb")              # segue o novo arquivo desde o início
+                key = _stat_key(FEED)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        try:
+            f.close()
+        except Exception:
+            pass
 
 def c_whoami(a):
     print(me_from(a))
@@ -234,13 +287,14 @@ def c_help(a):
       read [ID]        abre msg(s); sem ID = todas não lidas + marca lido
       open             perguntas abertas dirigidas a você
       answer <ID> [--to X] [--body "..."|stdin]   responde E fecha a pergunta
-      watch            sobe o watcher tail -F (rodar como background task)
+      watch            tail nativo do feed (rodar como background task)
       whoami / help
 
     Identidade: --me NAME | $COORD_ME | ./.coordme   |   Base: $COORD_DIR | dir do script
     """))
 
 def main():
+    _utf8_io()
     p = argparse.ArgumentParser(add_help=False)
     p.add_argument("--me")
     sub = p.add_subparsers(dest="cmd")

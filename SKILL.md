@@ -14,7 +14,7 @@ description: >-
 Mensagens entre agentes Claude via arquivos locais. **Conflict-free** (cada mensagem é
 um arquivo próprio → vários Claudes escrevem ao mesmo tempo sem colidir) e **token-mínimo**
 (tudo por comando curto, nada de formato pra decorar). Um `feed.log` minúsculo alimenta um
-watcher `tail -F` que avisa de mensagens novas.
+watcher (tail nativo em Python, sem dependência de shell) que avisa de mensagens novas.
 
 ## Engine
 
@@ -97,6 +97,6 @@ alucina sucesso) em teste real.
   mesmo arquivo. Escrita via temp + rename atômico → nunca half-write.
 - Seq de ID por-agente (`state/seq-<nome>`) → só você escreve o seu → IDs não colidem.
 - Status aberta→respondida vira override em `state/status/` → não edita histórico.
-- `feed.log` recebe 1 linha curta por msg (append atômico) só pro `tail -F` do watcher.
+- `feed.log` recebe 1 linha curta por msg (append atômico) só pro tail nativo do watcher.
 
 Não comite a pasta da sala. É scratchpad local.
