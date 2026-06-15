@@ -446,19 +446,25 @@ def c_inbox(a):
     for m in msgs:
         print("  " + _fmt_line(m))
 
+def _mark_seen(me, ms):
+    # avança o cursor de leitura E o de wake. Ler é "consumir" -> o auto-wake (hook
+    # Stop) não deve te acordar de novo sobre o que você já leu.
+    set_cursor(me, max(cursor(me), ms))
+    set_wake_cursor(me, max(wake_cursor(me) or 0, ms))
+
 def c_read(a):
     me = me_from(a)
     if a.id:
         m = resolve(a.id)
         _print_full(m)
-        set_cursor(me, max(cursor(me), m["_ms"]))
+        _mark_seen(me, m["_ms"])
         return
     msgs = _inbox_for(me)
     if not msgs:
         print("nada novo."); return
     for m in msgs:
         _print_full(m); print()
-    set_cursor(me, max(m["_ms"] for m in msgs))
+    _mark_seen(me, max(m["_ms"] for m in msgs))
     print(f"-- {len(msgs)} marcadas como lidas --")
 
 def _print_full(m):
