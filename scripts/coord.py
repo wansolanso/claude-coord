@@ -497,6 +497,28 @@ def c_unnest(a):
     else:
         print(f"(sala '{a.sala}' já era raiz)")
 
+def c_bind(a):
+    # Reconecta um agente ATIVO ao hook SEM resumir/branchar a sessão dele: escreve o
+    # binding por-sessão direto. O Stop-hook do agente (que já herda o session-id) passa
+    # a resolver o nome certo no próximo turno. Idempotente. Chamado pelo ⚡ do dashboard.
+    sid, name, room = a.session, a.as_, a.room
+    if not sid or not name or not room or not ROOM_RE.match(room):
+        sys.exit("erro: uso: coord bind --session <id> --as <nome> --room <sala>")
+    os.makedirs(SESS_DIR, exist_ok=True)
+    with open(os.path.join(SESS_DIR, sid), "w", encoding="utf-8", newline="\n") as fh:
+        fh.write(f"name={name}\nroom={room}\ncwd=\n")
+    fixed = ""
+    mf = _member_file(room, name)             # corrige member.session se já registrado (cura anomalia)
+    if os.path.isfile(mf):
+        prev = {}
+        for line in open(mf, encoding="utf-8"):
+            if "=" in line:
+                k, _, v = line.partition("="); prev[k.strip()] = v.strip()
+        _set_room(room_dir_for(room))
+        _register_member(name, cwd=prev.get("cwd") or None, session=sid, ts=prev.get("ts"))
+        fixed = " (+member.session corrigido)"
+    print(f"ok: binding de sessão {sid} -> '{name}' @ '{room}'{fixed}")
+
 # ---------- comandos ----------
 
 def c_send(a):
@@ -695,6 +717,8 @@ def c_help(a):
       unlink <pasta>                      tira a pasta da sala
       move <pasta> <sala>                 move a pasta p/ outra sala
       nest <sala> <pai> | unnest <sala>   hierarquia sala->sala (DAG, sem ciclo)
+      bind --session <id> --as <nome> --room <sala>   reconecta agente ATIVO ao hook
+                                          (escreve binding sem resume/branch)
       init <nome> --room <sala> [...]            alias de join (compat)
       send --to <nome|todos> --type <aviso|pergunta|resposta|decisao|bloqueio>
            --subject "..." [--ref ID] [--status ...] [--body "..." | stdin]
@@ -729,6 +753,9 @@ def main():
     s = sub.add_parser("move"); s.add_argument("path"); s.add_argument("room_name"); s.set_defaults(fn=c_move)
     s = sub.add_parser("nest"); s.add_argument("sala"); s.add_argument("pai"); s.set_defaults(fn=c_nest)
     s = sub.add_parser("unnest"); s.add_argument("sala"); s.set_defaults(fn=c_unnest)
+    s = sub.add_parser("bind"); s.add_argument("--session", required=True)
+    s.add_argument("--as", dest="as_", required=True); s.add_argument("--room", required=True)
+    s.set_defaults(fn=c_bind)
 
     s = sub.add_parser("join"); s.add_argument("room_name")
     s.add_argument("--as", dest="as_"); s.add_argument("--modifies"); s.add_argument("--reserves"); s.add_argument("--body")
