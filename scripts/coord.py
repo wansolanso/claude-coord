@@ -317,7 +317,7 @@ def _room_state(room):
 def c_state(a):
     # Saída machine-readable p/ o dashboard renderizar o DAG.
     # Nós = salas + pastas (member.cwd); arestas = membro->sala e sala->parent.
-    # subrooms o cliente deriva agrupando por 'parent'.
+    # subrooms o cliente deriva agrupando por 'parent'. (--json é no-op: já é sempre JSON.)
     import json
     rooms = []
     if os.path.isdir(ROOMS_BASE):
@@ -325,6 +325,21 @@ def c_state(a):
             if os.path.isdir(os.path.join(ROOMS_BASE, r)):
                 rooms.append(_room_state(r))
     print(json.dumps({"rooms_base": ROOMS_BASE, "rooms": rooms}, ensure_ascii=False))
+
+def c_messages(a):
+    # JSON das mensagens da sala ativa (--room <sala>) — desacopla o viewer do dashboard
+    # do parse dos .md. Status é o EFETIVO (override aplicado). Requer sala vinculada.
+    import json
+    out = []
+    for p in all_msgs():
+        m = parse(p)
+        out.append({
+            "id": m.get("ID"), "de": m.get("DE"), "para": m.get("PARA"),
+            "tipo": m.get("TIPO"), "status": eff_status(m["ID"], m.get("STATUS", "")),
+            "ref": m.get("REF"), "assunto": m.get("ASSUNTO"),
+            "ts": m["_ms"], "body": m["_body"],
+        })
+    print(json.dumps({"room": room_name_from(a), "messages": out}, ensure_ascii=False))
 
 # ---------- mutações (chamadas pelo server do dashboard via CLI; exit!=0 + stderr em erro) ----------
 def _member_file(room, name):
@@ -564,6 +579,7 @@ def c_help(a):
             entra/cria a sala, vincula ao projeto (./.coordme + ./.coordroom), posta intro.
       room             mostra a sala vinculada a este cwd
       state            JSON do DAG (salas+membros+métricas+hierarquia) — p/ o dashboard
+      messages --room <sala>   JSON das mensagens da sala (viewer sem parsear .md)
       link <pasta> <sala> [--as <nome>]   liga uma pasta a uma sala (dnd)
       unlink <pasta>                      tira a pasta da sala
       move <pasta> <sala>                 move a pasta p/ outra sala
@@ -593,7 +609,8 @@ def main():
 
     s = sub.add_parser("rooms"); s.set_defaults(fn=c_rooms)
     s = sub.add_parser("room"); s.set_defaults(fn=c_room)
-    s = sub.add_parser("state"); s.set_defaults(fn=c_state)   # JSON p/ o dashboard (DAG)
+    s = sub.add_parser("state"); s.add_argument("--json", action="store_true"); s.set_defaults(fn=c_state)
+    s = sub.add_parser("messages"); s.add_argument("--json", action="store_true"); s.set_defaults(fn=c_messages)
     # mutações do DAG (drag-and-drop do dashboard via CLI)
     s = sub.add_parser("link"); s.add_argument("path"); s.add_argument("room_name"); s.add_argument("--as", dest="as_")
     s.set_defaults(fn=c_link)
@@ -630,7 +647,7 @@ def main():
     if not cmd:
         c_help(a); return
     # comandos que tocam uma sala: precisam de sala vinculada (senão recusam / no-op p/ wake)
-    if cmd in {"send", "inbox", "read", "open", "answer", "watch", "wake"}:
+    if cmd in {"send", "inbox", "read", "open", "answer", "watch", "wake", "messages"}:
         silent = (cmd == "wake")
         if bind_room(a, silent=silent) is None:
             if silent:
