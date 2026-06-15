@@ -23,8 +23,11 @@ def main():
         engine = os.path.join(root, "scripts", "coord.py")
         if not os.path.isfile(engine):
             return
+        # encoding=utf-8: o engine emite UTF-8; sem isso o decode do pai (cp1252 no
+        # Windows) vira mojibake no aviso injetado.
         out = subprocess.run([sys.executable or "python", engine, "inbox"],
-                             capture_output=True, text=True, timeout=8)
+                             capture_output=True, text=True,
+                             encoding="utf-8", errors="replace", timeout=8)
         text = (out.stdout or "").strip()
         if text.startswith("inbox ("):  # "inbox (N não lidas) ..." -> há não lidas
             msg = ("📨 coord: há mensagens não lidas de outro(s) Claude(s):\n"

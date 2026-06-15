@@ -338,6 +338,7 @@ def c_messages(a):
             "tipo": m.get("TIPO"), "status": eff_status(m["ID"], m.get("STATUS", "")),
             "ref": m.get("REF"), "assunto": m.get("ASSUNTO"),
             "ts": m["_ms"], "body": m["_body"],
+            "mentions": sorted(_msg_mentions(m)),     # @nomes citados (p/ highlight no chat)
         })
     print(json.dumps({"room": room_name_from(a), "messages": out}, ensure_ascii=False))
 
@@ -415,6 +416,16 @@ def _fmt_line(m):
     tag = f" [{st}]" if m.get("TIPO") == "pergunta" else ""
     return f'{m["ID"]}  {m.get("DE","?")}->{m.get("PARA","?")}  {m.get("TIPO",""):<9} "{m.get("ASSUNTO","")}"{tag}'
 
+MENTION_RE = re.compile(r"@([A-Za-z0-9][A-Za-z0-9._-]{0,63})")
+def _msg_mentions(m):
+    # nomes @mencionados no assunto + corpo. Uma menção a você te notifica/acorda
+    # mesmo que o PARA seja outro agente (ou todos).
+    txt = (m.get("ASSUNTO", "") or "") + "\n" + (m.get("_body", "") or "")
+    return set(MENTION_RE.findall(txt))
+
+def _addressed(m, me):
+    return m.get("PARA") in (me, "todos") or me in _msg_mentions(m)
+
 def _inbox_for(me):
     cur = cursor(me)
     out = []
@@ -422,7 +433,7 @@ def _inbox_for(me):
         m = parse(p)
         if m["_ms"] <= cur: continue
         if m.get("DE") == me: continue
-        if m.get("PARA") not in (me, "todos"): continue
+        if not _addressed(m, me): continue       # PARA mim/todos OU @mim
         out.append(m)
     return out
 
@@ -555,7 +566,7 @@ def c_wake(a):
         m = parse(p)
         if m["_ms"] <= cur: continue
         if m.get("DE") == me: continue
-        if m.get("PARA") not in (me, "todos"): continue
+        if not _addressed(m, me): continue       # PARA mim/todos OU @mim
         new.append(m)
     if not new:
         return
