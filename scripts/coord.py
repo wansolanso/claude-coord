@@ -348,6 +348,8 @@ def _room_state(room):
         mem["last_seen_ts"] = mem.get("ts")
         mem["unread_count"] = sum(1 for m in parsed
                                   if m["_ms"] > cur and m.get("DE") != nm and m.get("PARA") in (nm, "todos"))
+        sid = mem.get("session")                  # adotou o método por-sessão? então cwd compartilhado é seguro
+        mem["session_bound"] = bool(sid and sid != "?" and os.path.isfile(os.path.join(SESS_DIR, sid)))
     return {
         "name": room,
         "parent": _read_parent(room),                 # aresta sala->pai (DAG); None = raiz
@@ -368,6 +370,17 @@ def c_state(a):
         for r in sorted(os.listdir(ROOMS_BASE)):
             if os.path.isdir(os.path.join(ROOMS_BASE, r)):
                 rooms.append(_room_state(r))
+    # risco de hook AUTORITATIVO: co-localizado (cwd compartilhado, GLOBAL) E sem binding
+    # de sessão. Quem adotou o método por-sessão (0.2.6) NÃO é flagado mesmo co-localizado.
+    cwd_count = {}
+    for r in rooms:
+        for m in r["members"]:
+            c = (m.get("cwd") or "").lower()
+            cwd_count[c] = cwd_count.get(c, 0) + 1
+    for r in rooms:
+        for m in r["members"]:
+            m["co_located"] = cwd_count.get((m.get("cwd") or "").lower(), 0) > 1
+            m["hook_at_risk"] = m["co_located"] and not m.get("session_bound", False)
     print(json.dumps({"rooms_base": ROOMS_BASE, "rooms": rooms}, ensure_ascii=False))
 
 def c_messages(a):
