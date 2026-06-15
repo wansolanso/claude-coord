@@ -34,10 +34,11 @@ def _set_room(d):
     FEED = os.path.join(d, "feed.log")
 
 def _utf8_io():
-    # stdout/stderr em UTF-8 — sem isso, `read`/`inbox`/`watch` quebram com
-    # UnicodeEncodeError no Windows (console default = cp1252) quando uma msg
-    # tem caractere fora do cp1252. Evita ter de exportar PYTHONIOENCODING.
-    for s in (sys.stdout, sys.stderr):
+    # stdin/stdout/stderr em UTF-8 — sem isso, no Windows (console default = cp1252):
+    #  - out/err: `read`/`inbox`/`watch` quebram com UnicodeEncodeError;
+    #  - in: corpo vindo por `echo "..." | coord send` é decodificado em cp1252 e
+    #    vira MOJIBAKE no .md. Evita ter de exportar PYTHONIOENCODING.
+    for s in (sys.stdin, sys.stdout, sys.stderr):
         try:
             s.reconfigure(encoding="utf-8", errors="replace")
         except Exception:
@@ -80,7 +81,7 @@ def _register_member(name):
     try:
         d = os.path.join(STA, "members"); os.makedirs(d, exist_ok=True)
         sess = os.environ.get("CLAUDE_CODE_SESSION_ID", "?")
-        with open(os.path.join(d, name), "w", encoding="utf-8") as fh:
+        with open(os.path.join(d, name), "w", encoding="utf-8", newline="\n") as fh:
             fh.write(f"name={name}\ncwd={os.getcwd()}\nsession={sess}\nts={int(time.time()*1000)}\n")
     except Exception:
         pass
@@ -200,11 +201,13 @@ def write_msg(de, para, tipo, assunto, body, ref=None, status=None):
     fname = f"{ms}__{mid}.md"
     final = os.path.join(MSG, fname)
     tmp = final + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as fh:
+    # newline="\n": NÃO deixa o text-mode do Windows converter \n->\r\n. Sem isso os .md
+    # ficam CRLF no disco e um leitor externo (ex: o dashboard) quebra no split "\n\n".
+    with open(tmp, "w", encoding="utf-8", newline="\n") as fh:
         fh.write(content)
     os.replace(tmp, final)              # rename atômico -> nunca half-write
     feed = f"FROM={de} TO={para} TYPE={tipo} STATUS={status} ID={mid} SUBJ={assunto}\n"
-    with open(FEED, "a", encoding="utf-8") as fh:  # append pequeno = atômico
+    with open(FEED, "a", encoding="utf-8", newline="\n") as fh:  # append pequeno = atômico
         fh.write(feed)
     _register_member(de)                # mantém a pasta/sessão do agente atualizada
     return mid, ms
@@ -266,6 +269,17 @@ def c_room(a):
         print("rode `coord rooms` e `coord join <sala> --as <nome>`.")
         return
     print(f"sala: {name}" + (f"  |  você: {me}" if me else "  |  (sem identidade — use --as no join)"))
+
+def c_state(a):
+    # Saída machine-readable p/ o dashboard renderizar o DAG (salas + membros + pastas).
+    # Nós = salas e pastas (member.cwd); arestas = member -> sala.
+    import json
+    rooms = []
+    if os.path.isdir(ROOMS_BASE):
+        for r in sorted(os.listdir(ROOMS_BASE)):
+            if os.path.isdir(os.path.join(ROOMS_BASE, r)):
+                rooms.append({"name": r, "members": _room_members(r)})
+    print(json.dumps({"rooms_base": ROOMS_BASE, "rooms": rooms}, ensure_ascii=False))
 
 # ---------- comandos ----------
 
@@ -468,6 +482,7 @@ def main():
 
     s = sub.add_parser("rooms"); s.set_defaults(fn=c_rooms)
     s = sub.add_parser("room"); s.set_defaults(fn=c_room)
+    s = sub.add_parser("state"); s.set_defaults(fn=c_state)   # JSON p/ o dashboard (DAG)
 
     s = sub.add_parser("join"); s.add_argument("room_name")
     s.add_argument("--as", dest="as_"); s.add_argument("--modifies"); s.add_argument("--reserves"); s.add_argument("--body")
