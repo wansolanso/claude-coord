@@ -14,8 +14,9 @@ description: >-
 Mensagens entre agentes Claude via arquivos locais, organizadas em **salas separadas**
 (uma por esforço/projeto). **Conflict-free** (cada mensagem é um arquivo próprio → vários
 Claudes escrevem ao mesmo tempo sem colidir) e **token-mínimo** (tudo por comando curto,
-nada de formato pra decorar). Recebimento é automático via hook `Stop` (auto-wake); um
-`feed.log` por sala alimenta um watcher opcional (tail nativo em Python).
+nada de formato pra decorar). Recebimento em 2 camadas: hook `Stop` (auto-wake, cobre sessão
+ATIVA) + watcher `coord watch` (Monitor, acorda também a sessão OCIOSA — **recomendado p/
+agente autônomo que coordena**).
 
 ## Engine
 
@@ -57,19 +58,29 @@ Override pontual sem vincular: `--room <sala>` ou `$COORD_ROOM` / `$COORD_DIR` (
 > cwd. Vários Claudes no mesmo cwd compartilhariam `./.coordroom`/`./.coordme` (passe
 > `--me`/`--room` em cada comando se precisar).
 
-**Recebimento automático (sem Monitor)** — o plugin instala um hook `Stop` que, ao fim de
-cada turno do Claude, puxa mensagens novas dirigidas a você e te **acorda** pra tratá-las
-(auto-wake). Não precisa manter processo vivo. **Custo zero de token quando não há nada
-novo** (o hook roda fora da banda; só injeta contexto quando há mail). Latência = 1 turno:
-ele acorda quando ia encerrar. Cada mensagem acorda no máximo 1x (cursor de wake próprio).
+## Recebimento — duas camadas, escolha pelo tipo de sessão
 
-**Watcher opcional** (`ENGINE watch`) — só se você quer latência sub-turno ou acordar numa
-sessão **100% ociosa** (parada esperando o humano), caso que o hook não cobre. Suba como
-background task (Bash run_in_background / Monitor) e deixe rodando:
+**1. Hook `Stop` (auto-wake) — custo zero, cobre sessão ATIVA.** O plugin instala um hook
+que, ao FIM DE CADA TURNO, puxa mensagens novas dirigidas a você e te acorda. Zero token
+quando não há mail. **Limite:** ele só dispara num fim de turno — **NÃO acorda uma sessão
+OCIOSA** (parada, sem turno). Pra uma sessão interativa (humano presente) isso basta: os
+turnos + o aviso no `UserPromptSubmit` cobrem.
+
+**2. Watcher `ENGINE watch` — RECOMENDADO p/ agente AUTÔNOMO que coordena.** Suba 1x por
+sessão como background task persistente (Bash run_in_background / Monitor):
 ```bash
 ENGINE watch
 ```
-Imprime 1 linha por mensagem nova de outro agente (self filtrado), latência 1-5s.
+É um Monitor que **acorda mesmo a sessão OCIOSA** (eventos chegam assíncronos, fora de
+turno) — o que o hook `Stop` não faz. Num time, a maioria dos agentes está sempre ociosa
+esperando resposta; **sem watcher a mensagem trava** (o hook nunca dispara). Imprime 1 linha
+por mensagem nova de outro agente (self filtrado), latência 1-5s. Tail nativo em Python, sem
+dependência de shell.
+
+> Regra prática: **interativo** (você está junto) → hook basta. **Autônomo/headless que
+> coordena** → suba o `watch`. Pra acordar um ocioso que ainda não tem watcher, dê um turno
+> a ele de fora (`claude --resume <id> -p "..."` com `COORD_ME`/`COORD_ROOM`), e nesse turno
+> ele sobe o próprio `watch`.
 
 ## Uso diário
 
