@@ -88,6 +88,18 @@ def _write_session_binding(name, room):
     except Exception:
         pass
 
+def _ensure_session_binding(args):
+    # "Force per-session": se a sessão foi lançada com COORD_ME (sinal explícito e
+    # não-ambíguo de identidade) e tem session-id, persiste o binding por-sessão na
+    # 1a execução — sem precisar de `join`, sem intro, e marca session_bound=true.
+    # É o que o ⚡ ("acordar agente") do dashboard usa: lança com COORD_ME/COORD_ROOM.
+    sid = os.environ.get("CLAUDE_CODE_SESSION_ID")
+    name = os.environ.get("COORD_ME")
+    if not sid or not name or os.path.isfile(os.path.join(SESS_DIR, sid)):
+        return
+    room = os.environ.get("COORD_ROOM") or room_name_from(args) or ""
+    _write_session_binding(name, room)
+
 def room_name_from(args):
     if getattr(args, "room", None):
         return args.room
@@ -745,6 +757,7 @@ def main():
     cmd = getattr(a, "cmd", None)
     if not cmd:
         c_help(a); return
+    _ensure_session_binding(a)   # force per-session: COORD_ME no env -> persiste binding 1x
     # comandos que tocam uma sala: precisam de sala vinculada (senão recusam / no-op p/ wake)
     if cmd in {"send", "inbox", "read", "open", "answer", "watch", "wake", "messages"}:
         silent = (cmd == "wake")
