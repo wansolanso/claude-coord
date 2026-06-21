@@ -270,7 +270,8 @@ def write_msg(de, para, tipo, assunto, body, ref=None, status=None):
     with open(tmp, "w", encoding="utf-8", newline="\n") as fh:
         fh.write(content)
     os.replace(tmp, final)              # rename atômico -> nunca half-write
-    feed = f"FROM={de} TO={para} TYPE={tipo} STATUS={status} ID={mid} SUBJ={assunto}\n"
+    ment = ",".join(sorted(_mentions_in((assunto or "") + "\n" + (body or ""))))
+    feed = f"FROM={de} TO={para} TYPE={tipo} STATUS={status} ID={mid} MENTIONS={ment} SUBJ={assunto}\n"
     with open(FEED, "a", encoding="utf-8", newline="\n") as fh:  # append pequeno = atômico
         fh.write(feed)
     _register_member(de)                # mantém a pasta/sessão do agente atualizada
@@ -287,16 +288,13 @@ def _do_join(room, name, modifies=None, reserves=None, body=None):
     open(os.path.join(cwd, ".coordme"),   "w", encoding="utf-8", newline="\n").write(name)
     _write_session_binding(name, room)   # vínculo POR SESSÃO: precede ./.coordme -> cwd compartilhado não colide
     _set_room(room_dir_for(room)); _ensure()
-    text = body or ""
-    extra = []
-    if modifies: extra.append(f"**Modifico:** {modifies}")
-    if reserves: extra.append(f"**Reservo p/ outros:** {reserves}")
-    if extra: text = (text + "\n\n" + "\n".join(extra)).strip()
-    if not text:
-        text = f"Sou **{name}**. Entrando na sala '{room}'."
-    mid, _ = write_msg(name, "todos", "aviso", f"identidade: {name}", text, status="informativa")
+    _register_member(name)               # entra na sala (aparece no `rooms`/`state`) — sem broadcast (não há 'todos')
     sess = "+sessão" if os.environ.get("CLAUDE_CODE_SESSION_ID") else ""
-    print(f"ok: '{name}' vinculado à sala '{room}'  (./.coordme + ./.coordroom {sess})  |  intro {mid}")
+    extra = []
+    if modifies: extra.append(f"modifico: {modifies}")
+    if reserves: extra.append(f"reservo: {reserves}")
+    tail = ("  |  " + " · ".join(extra)) if extra else ""
+    print(f"ok: '{name}' vinculado à sala '{room}'  (./.coordme + ./.coordroom {sess}){tail}")
 
 def c_join(a):
     _do_join(a.room_name, a.as_ or _existing_me(), a.modifies, a.reserves, a.body)
@@ -347,7 +345,7 @@ def _room_state(room):
         cur = cursor(nm)
         mem["last_seen_ts"] = mem.get("ts")
         mem["unread_count"] = sum(1 for m in parsed
-                                  if m["_ms"] > cur and m.get("DE") != nm and m.get("PARA") in (nm, "todos"))
+                                  if m["_ms"] > cur and m.get("DE") != nm and _addressed(m, nm))
         sid = mem.get("session")                  # adotou o método por-sessão? então cwd compartilhado é seguro
         mem["session_bound"] = bool(sid and sid != "?" and os.path.isfile(os.path.join(SESS_DIR, sid)))
     return {
@@ -460,8 +458,16 @@ def c_unnest(a):
 def c_send(a):
     de = me_from(a)
     body = a.body if a.body is not None else (sys.stdin.read() if not sys.stdin.isatty() else "")
-    mid, _ = write_msg(de, a.to, a.type, a.subject, body, ref=a.ref, status=a.status)
-    print(f"enviado {mid}  (DE {de} PARA {a.to} {a.type})")
+    if a.to == "todos":
+        sys.exit("erro: 'todos' não existe mais — marque com @nome (no corpo/assunto) ou --to <nome>.")
+    ment = _mentions_in((a.subject or "") + "\n" + (body or ""))
+    if not a.to and not ment:
+        sys.exit("erro: endereça alguém — @nome no corpo/assunto, ou --to <nome>.")
+    para = a.to or sorted(ment)[0]      # PARA = destinatário primário; @menções acordam todos os citados
+    mid, _ = write_msg(de, para, a.type, a.subject, body, ref=a.ref, status=a.status)
+    extra = sorted(ment - {para})
+    alvo = para + (" +@" + ",".join(extra) if extra else "")
+    print(f"enviado {mid}  (DE {de} PARA {alvo} {a.type})")
 
 def _fmt_line(m):
     st = eff_status(m["ID"], m.get("STATUS", ""))
@@ -469,14 +475,16 @@ def _fmt_line(m):
     return f'{m["ID"]}  {m.get("DE","?")}->{m.get("PARA","?")}  {m.get("TIPO",""):<9} "{m.get("ASSUNTO","")}"{tag}'
 
 MENTION_RE = re.compile(r"@([A-Za-z0-9][A-Za-z0-9._-]{0,63})")
+def _mentions_in(text):
+    return set(MENTION_RE.findall(text or ""))
+
 def _msg_mentions(m):
-    # nomes @mencionados no assunto + corpo. Uma menção a você te notifica/acorda
-    # mesmo que o PARA seja outro agente (ou todos).
-    txt = (m.get("ASSUNTO", "") or "") + "\n" + (m.get("_body", "") or "")
-    return set(MENTION_RE.findall(txt))
+    # nomes @mencionados no assunto + corpo. Marcar @você te endereça/acorda.
+    return _mentions_in((m.get("ASSUNTO", "") or "") + "\n" + (m.get("_body", "") or ""))
 
 def _addressed(m, me):
-    return m.get("PARA") in (me, "todos") or me in _msg_mentions(m)
+    # endereçada a você = PARA você OU @você. Não existe mais 'todos' (broadcast removido).
+    return m.get("PARA") == me or me in _msg_mentions(m)
 
 def _inbox_for(me):
     cur = cursor(me)
@@ -485,7 +493,7 @@ def _inbox_for(me):
         m = parse(p)
         if m["_ms"] <= cur: continue
         if m.get("DE") == me: continue
-        if not _addressed(m, me): continue       # PARA mim/todos OU @mim
+        if not _addressed(m, me): continue       # PARA mim OU @mim
         out.append(m)
     return out
 
@@ -529,7 +537,7 @@ def c_open(a):
         if m.get("TIPO") != "pergunta": continue
         if m.get("DE") == me: continue                       # nunca a sua própria pergunta
         if eff_status(m["ID"], m.get("STATUS", "")) != "aberta": continue
-        if m.get("PARA") not in (me, "todos"): continue      # só dirigidas a você ou broadcast
+        if not _addressed(m, me): continue                   # só dirigidas a você (PARA ou @você)
         print("  " + _fmt_line(m)); found = True
     if not found: print("nenhuma pergunta aberta pra você.")
 
@@ -540,10 +548,10 @@ def c_answer(a):
         sys.exit(f"erro: '{q['ID']}' é sua própria pergunta — você não responde a si mesmo.")
     if q.get("TIPO") != "pergunta":
         sys.exit(f"erro: '{q['ID']}' não é uma pergunta (TIPO={q.get('TIPO')}).")
-    if q.get("PARA") not in (me, "todos"):
+    if not _addressed(q, me):
         sys.exit(f"erro: '{q['ID']}' foi dirigida a {q.get('PARA')}, não a você. Não responda o que não é pra você.")
     body = a.body if a.body is not None else (sys.stdin.read() if not sys.stdin.isatty() else "")
-    to = a.to or q.get("DE", "todos")
+    to = a.to or q.get("DE")
     mid, _ = write_msg(me, to, "resposta", f're: {q.get("ASSUNTO","")}', body, ref=q["ID"], status="informativa")
     open(status_path(q["ID"]), "w", encoding="utf-8").write("respondida")  # flip da origem (override, não edita o arquivo)
     print(f"respondido {mid}  | {q['ID']} -> respondida")
@@ -555,6 +563,19 @@ def _stat_key(path):
     except OSError:
         return None
 
+def _feedfield(line, key):
+    m = re.search(rf"(?:^| ){key}=(\S*)", line)
+    return m.group(1) if m else ""
+
+def _line_for_me(line, me):
+    # O Monitor mostra SÓ as notificações da pessoa: TO=eu OU @eu nas MENTIONS. Nunca self.
+    if _feedfield(line, "FROM") == me:
+        return False
+    if _feedfield(line, "TO") == me:
+        return True
+    ment = _feedfield(line, "MENTIONS")
+    return bool(ment) and me in ment.split(",")
+
 def c_watch(a):
     # Tail nativo em Python: NÃO depende de bash/tail/grep e funciona com caminho
     # Windows (o `bash -c 'tail -F "C:\...\feed.log"'` antigo morria: o tail do
@@ -564,8 +585,7 @@ def c_watch(a):
     _ensure()
     if not os.path.isfile(FEED):
         open(FEED, "a", encoding="utf-8").close()
-    prefix = f"FROM={me} "
-    print(f"[watch] {me}: ouvindo feed, ignorando self. Ctrl-C p/ sair.", flush=True)
+    print(f"[watch] {me}: ouvindo só o que é pra mim (TO={me} ou @{me}). Ctrl-C p/ sair.", flush=True)
     f = open(FEED, "rb")                         # binário: tell() = offset real em bytes
     f.seek(0, os.SEEK_END)                       # tail -n 0: só mensagens novas
     key = _stat_key(FEED)
@@ -575,7 +595,7 @@ def c_watch(a):
             raw = f.readline()
             if raw and raw.endswith(b"\n"):       # linha completa
                 line = raw.decode("utf-8", "replace")
-                if not line.startswith(prefix):   # filtra self
+                if _line_for_me(line, me):        # só notificações dirigidas a mim
                     sys.stdout.write(line)
                     sys.stdout.flush()
                 continue
@@ -622,14 +642,15 @@ def c_help(a):
       move <pasta> <sala>                 move a pasta p/ outra sala
       nest <sala> <pai> | unnest <sala>   hierarquia sala->sala (DAG, sem ciclo)
       init <nome> --room <sala> [...]            alias de join (compat)
-      send --to <nome|todos> --type <aviso|pergunta|resposta|decisao|bloqueio>
+      send [--to <nome>] --type <aviso|pergunta|resposta|decisao|bloqueio>
            --subject "..." [--ref ID] [--status ...] [--body "..." | stdin]
-      inbox            lista não lidas (não consome)
+            endereça com @nome (no corpo/assunto) e/ou --to <nome>. NÃO há 'todos'.
+      inbox            lista não lidas dirigidas a você (PARA você ou @você)
       read [ID]        abre msg(s); sem ID = todas não lidas + marca lido
       open             perguntas abertas dirigidas a você
       answer <ID> [--to X] [--body "..."|stdin]   responde E fecha a pergunta
-      watch            tail nativo do feed da sala — rode como Monitor persistente p/ ser
-                       avisado de mensagens novas (mesmo ocioso)
+      watch            tail do feed — emite SÓ o que é dirigido a você (TO=você ou @você).
+                       rode como Monitor persistente p/ ser avisado (mesmo ocioso)
       whoami / help
 
     Identidade: --me NAME | $COORD_ME | ./.coordme
@@ -665,7 +686,7 @@ def main():
     s.set_defaults(fn=c_init)
 
     s = sub.add_parser("send")
-    s.add_argument("--to", required=True); s.add_argument("--type", required=True)
+    s.add_argument("--to"); s.add_argument("--type", required=True)
     s.add_argument("--subject", required=True); s.add_argument("--ref"); s.add_argument("--status")
     s.add_argument("--body"); s.set_defaults(fn=c_send)
 

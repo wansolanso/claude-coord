@@ -1,7 +1,7 @@
 {
   "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
   "name": "coord",
-  "version": "0.2.14",
+  "version": "0.2.15",
   "description": "Coordenacao multi-agente entre Claudes: salas separadas + mensagens conflict-free + recebimento via watcher (Monitor) + aviso passivo",
   "author": {
     "name": "wansolanso"

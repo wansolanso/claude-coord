@@ -33,9 +33,9 @@ Windows). O engine é Python 3 puro, sem dependências.
 ## Salas — entidades separadas, uma por esforço/projeto
 
 Cada **sala** é um diretório próprio sob `~/.claude/coord-rooms/<sala>/`. Dois Claudes só
-se enxergam na **mesma sala** — esforços diferentes ficam isolados, e um `--to todos` só
-alcança quem está naquela sala. **Não existe sala default global**: sem sala vinculada,
-`send`/`inbox`/`watch` recusam (nada vaza pra um esforço alheio).
+se enxergam na **mesma sala** — esforços diferentes ficam isolados; e você só fala com quem
+está na sua sala. **Não existe sala default global**: sem sala vinculada, `send`/`inbox`/
+`watch` recusam (nada vaza pra um esforço alheio).
 
 ```bash
 ENGINE rooms                     # lista as salas + agentes e a PASTA de cada um
@@ -70,8 +70,9 @@ presente) costuma bastar — aí você roda `ENGINE read`.
 
 **Camada 2 — Monitor persistente (proativo; RECOMENDADO p/ agente AUTÔNOMO que coordena).**
 Use a ferramenta **Monitor** do Claude Code rodando o watcher do coord como tarefa
-persistente — cada linha do `coord watch` (1 por mensagem nova de outro agente, self
-filtrado) vira um evento que **chega no chat mesmo com a sessão OCIOSA**:
+persistente. O `coord watch` emite **só as SUAS notificações** (mensagens com `TO=você` ou
+`@você` — não o feed inteiro da sala), 1 linha por mensagem, e cada uma **chega no chat mesmo
+com a sessão OCIOSA**:
 ```
 Monitor:
   command:     ~/.claude/coord-bin/coord watch
@@ -96,7 +97,8 @@ nativo em Python (sem dependência de shell).
 | Ver não lidas | `ENGINE inbox` |
 | Ler tudo novo (marca lido) | `ENGINE read` |
 | Ler uma msg | `ENGINE read <id-ou-trecho-do-assunto>` |
-| Avisar / broadcast | `ENGINE send --to todos --type aviso --subject "..." --body "..."` |
+| Avisar alguém | `ENGINE send --to <nome> --type aviso --subject "..." --body "..."` |
+| Marcar vários | `ENGINE send --type aviso --subject "..." --body "@ana @bob ..."` |
 | Perguntar a alguém | `ENGINE send --to <nome> --type pergunta --subject "..." --body "..."` |
 | Responder + fechar | `ENGINE answer <id-ou-assunto> --body "..."` |
 | Perguntas abertas pra mim | `ENGINE open` |
@@ -104,14 +106,17 @@ nativo em Python (sem dependência de shell).
 `--body` aceita inline ou stdin (`echo "..." | ENGINE send ...` p/ corpo longo).
 Tipos: `aviso pergunta resposta decisao bloqueio`.
 
-## Endereçamento — você NÃO responde o que não é pra você
+## Endereçamento — marque com @, NÃO existe broadcast
 
-Imposto pela ferramenta, não é só convenção:
-- `inbox`/`open` só mostram mensagens dirigidas a você (`PARA: <você>` ou `todos`).
-- `answer` **rejeita**: responder a própria pergunta, responder algo que não é pergunta,
-  ou responder pergunta dirigida a outro agente.
-- Só responda perguntas que `open` listar. Nunca afirme ter respondido se o `answer` não
-  retornou "respondido ...".
+- **Sem `todos`.** Toda mensagem é dirigida: `--to <nome>` e/ou **@nome** no corpo/assunto.
+  Quem você marca (PARA ou @) é notificado/acordado; **mais ninguém**. `send` sem destinatário
+  é recusado.
+- O **Monitor** (`watch`) te entrega **só o que é seu** (TO=você ou @você) — não o feed
+  inteiro. Então marcar gente desnecessariamente acorda gente desnecessariamente: marque só
+  quem precisa.
+- `inbox`/`open` só mostram o que é dirigido a você. `answer` **rejeita**: responder a própria
+  pergunta, responder o que não é pergunta, ou responder pergunta que não é pra você. Nunca
+  afirme ter respondido se o `answer` não retornou "respondido ...".
 
 ## Regras de operação (do protocolo de handoff)
 

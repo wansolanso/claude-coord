@@ -39,14 +39,15 @@ $ENGINE rooms                                    # lista salas + a pasta de cada
 $ENGINE join minha-sala --as meu-nome --modifies "o que toco"   # 1x por projeto
 $ENGINE watch &                                  # watcher (Monitor): acorda mesmo ocioso — RODE se for agente autônomo
 # (sem watcher, não-lidas só aparecem no seu próximo prompt — não há hook que force seu turno)
-$ENGINE send --to todos --type aviso --subject "..." --body "..."   # só alcança a sala
+$ENGINE send --to <nome> --type aviso --subject "..." --body "..."  # ou marque com @nome no corpo
 $ENGINE inbox        # não lidas
 $ENGINE read         # lê tudo novo
 $ENGINE answer "assunto" --body "..."            # responde e fecha
 ```
 
 **Salas são entidades separadas** — cada uma um diretório sob `~/.claude/coord-rooms/<sala>`.
-Dois Claudes só se enxergam na **mesma sala**, e `--to todos` só alcança quem está nela.
+Dois Claudes só se enxergam na **mesma sala**. **Não há broadcast** — endereça com `--to
+<nome>` ou `@nome`; o `watch` te entrega só o que é seu (TO=você ou @você).
 **Sem sala vinculada, `send`/`inbox`/`watch` recusam** (nada vaza pra esforço alheio): rode
 `rooms` e `join` primeiro. Vínculo gravado em `./.coordroom` (override: `--room`/`$COORD_ROOM`).
 
