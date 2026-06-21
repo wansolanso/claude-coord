@@ -15,7 +15,7 @@ Sala ativa: --room NAME | $COORD_ROOM | sessão | <cwd>/.coordroom | $COORD_DIR 
             dirs sob $COORD_ROOMS_BASE (default ~/.claude/coord-rooms/<sala>)
 
 Verbos: rooms join room state | link unlink move nest unnest (DAG) | init send inbox
-        read open answer watch wake whoami help
+        read open answer watch whoami help
 """
 import os, sys, time, glob, argparse, textwrap, re
 
@@ -87,18 +87,6 @@ def _write_session_binding(name, room):
             fh.write(f"name={name}\nroom={room}\ncwd={os.getcwd()}\n")
     except Exception:
         pass
-
-def _ensure_session_binding(args):
-    # "Force per-session": se a sessão foi lançada com COORD_ME (sinal explícito e
-    # não-ambíguo de identidade) e tem session-id, persiste o binding por-sessão na
-    # 1a execução — sem precisar de `join`, sem intro, e marca session_bound=true.
-    # É o que o ⚡ ("acordar agente") do dashboard usa: lança com COORD_ME/COORD_ROOM.
-    sid = os.environ.get("CLAUDE_CODE_SESSION_ID")
-    name = os.environ.get("COORD_ME")
-    if not sid or not name or os.path.isfile(os.path.join(SESS_DIR, sid)):
-        return
-    room = os.environ.get("COORD_ROOM") or room_name_from(args) or ""
-    _write_session_binding(name, room)
 
 def room_name_from(args):
     if getattr(args, "room", None):
@@ -194,12 +182,6 @@ def _room_members(room):
 def _existing_me():
     return _read_cwd_file(".coordme")
 
-def _me_safe(args):
-    # como me_from, mas NUNCA sai (pro hook/wake silencioso). Sessão > $COORD_ME > .coordme.
-    b = _session_binding()
-    return (getattr(args, "me", None) or os.environ.get("COORD_ME")
-            or (b.get("name") if b else None) or _existing_me())
-
 def me_from(args):
     if getattr(args, "me", None):
         return args.me
@@ -268,18 +250,6 @@ def cursor(name):
 def set_cursor(name, ms):
     open(os.path.join(STA, f"cursor-{name}"), "w").write(str(ms))
 
-# cursor de WAKE: separado do de leitura. Marca o que já foi *surfaceado* pelo
-# auto-wake (hook Stop), pra cada mensagem acordar o agente no máximo 1x — sem
-# isso o hook re-bloquearia o stop em loop. Independe de `read` (a msg segue
-# "não lida" no inbox até o agente realmente ler).
-def wake_cursor(name):
-    f = os.path.join(STA, f"wake-{name}")
-    return int(open(f).read().strip()) if os.path.isfile(f) else None
-
-def set_wake_cursor(name, ms):
-    _ensure()
-    open(os.path.join(STA, f"wake-{name}"), "w").write(str(ms))
-
 # ---------- escrita ----------
 def write_msg(de, para, tipo, assunto, body, ref=None, status=None):
     _ensure()
@@ -325,7 +295,6 @@ def _do_join(room, name, modifies=None, reserves=None, body=None):
     if not text:
         text = f"Sou **{name}**. Entrando na sala '{room}'."
     mid, _ = write_msg(name, "todos", "aviso", f"identidade: {name}", text, status="informativa")
-    set_wake_cursor(name, int(time.time() * 1000))   # entra sem despejar histórico no auto-wake
     sess = "+sessão" if os.environ.get("CLAUDE_CODE_SESSION_ID") else ""
     print(f"ok: '{name}' vinculado à sala '{room}'  (./.coordme + ./.coordroom {sess})  |  intro {mid}")
 
@@ -401,16 +370,6 @@ def c_state(a):
         for r in sorted(os.listdir(ROOMS_BASE)):
             if os.path.isdir(os.path.join(ROOMS_BASE, r)):
                 rooms.append(_room_state(r))
-    # risco de hook AUTORITATIVO: co-localizado (cwd compartilhado, GLOBAL) E sem binding
-    # de sessão. Quem adotou o método por-sessão (0.2.6) NÃO é flagado mesmo co-localizado.
-    cwd_names = {}   # cwd -> set de NOMES distintos (mesmo agente em N salas = 1 nome, não conta como co-loc)
-    for r in rooms:
-        for m in r["members"]:
-            cwd_names.setdefault((m.get("cwd") or "").lower(), set()).add(m.get("name"))
-    for r in rooms:
-        for m in r["members"]:
-            m["co_located"] = len(cwd_names.get((m.get("cwd") or "").lower(), ())) > 1
-            m["hook_at_risk"] = m["co_located"] and not m.get("session_bound", False)
     print(json.dumps({"rooms_base": ROOMS_BASE, "rooms": rooms}, ensure_ascii=False))
 
 def c_messages(a):
@@ -496,28 +455,6 @@ def c_unnest(a):
     else:
         print(f"(sala '{a.sala}' já era raiz)")
 
-def c_bind(a):
-    # Reconecta um agente ATIVO ao hook SEM resumir/branchar a sessão dele: escreve o
-    # binding por-sessão direto. O Stop-hook do agente (que já herda o session-id) passa
-    # a resolver o nome certo no próximo turno. Idempotente. Chamado pelo ⚡ do dashboard.
-    sid, name, room = a.session, a.as_, a.room
-    if not sid or not name or not room or not ROOM_RE.match(room):
-        sys.exit("erro: uso: coord bind --session <id> --as <nome> --room <sala>")
-    os.makedirs(SESS_DIR, exist_ok=True)
-    with open(os.path.join(SESS_DIR, sid), "w", encoding="utf-8", newline="\n") as fh:
-        fh.write(f"name={name}\nroom={room}\ncwd=\n")
-    fixed = ""
-    mf = _member_file(room, name)             # corrige member.session se já registrado (cura anomalia)
-    if os.path.isfile(mf):
-        prev = {}
-        for line in open(mf, encoding="utf-8"):
-            if "=" in line:
-                k, _, v = line.partition("="); prev[k.strip()] = v.strip()
-        _set_room(room_dir_for(room))
-        _register_member(name, cwd=prev.get("cwd") or None, session=sid, ts=prev.get("ts"))
-        fixed = " (+member.session corrigido)"
-    print(f"ok: binding de sessão {sid} -> '{name}' @ '{room}'{fixed}")
-
 # ---------- comandos ----------
 
 def c_send(a):
@@ -561,25 +498,19 @@ def c_inbox(a):
     for m in msgs:
         print("  " + _fmt_line(m))
 
-def _mark_seen(me, ms):
-    # avança o cursor de leitura E o de wake. Ler é "consumir" -> o auto-wake (hook
-    # Stop) não deve te acordar de novo sobre o que você já leu.
-    set_cursor(me, max(cursor(me), ms))
-    set_wake_cursor(me, max(wake_cursor(me) or 0, ms))
-
 def c_read(a):
     me = me_from(a)
     if a.id:
         m = resolve(a.id)
         _print_full(m)
-        _mark_seen(me, m["_ms"])
+        set_cursor(me, max(cursor(me), m["_ms"]))
         return
     msgs = _inbox_for(me)
     if not msgs:
         print("nada novo."); return
     for m in msgs:
         _print_full(m); print()
-    _mark_seen(me, max(m["_ms"] for m in msgs))
+    set_cursor(me, max(m["_ms"] for m in msgs))
     print(f"-- {len(msgs)} marcadas como lidas --")
 
 def _print_full(m):
@@ -670,32 +601,6 @@ def c_watch(a):
         except Exception:
             pass
 
-def c_wake(a):
-    # Auto-wake (chamado pelo hook Stop). Imprime mensagens NOVAS dirigidas a mim
-    # desde o último wake e avança o cursor de wake. Stdout vazio = nada novo.
-    # Primeira vez (sem cursor): prima em "agora" e não despeja histórico
-    # (semântica tail -n 0); o backstop de histórico é o hook UserPromptSubmit.
-    me = _me_safe(a)
-    if not me:                  # sem identidade -> hook fica silencioso
-        return
-    cur = wake_cursor(me)
-    if cur is None:
-        set_wake_cursor(me, int(time.time() * 1000))
-        return
-    new = []
-    for p in all_msgs():
-        m = parse(p)
-        if m["_ms"] <= cur: continue
-        if m.get("DE") == me: continue
-        if not _addressed(m, me): continue       # PARA mim/todos OU @mim
-        new.append(m)
-    if not new:
-        return
-    set_wake_cursor(me, max(m["_ms"] for m in new))
-    print(f"📨 coord: {len(new)} mensagem(ns) nova(s) para {me}:")
-    for m in new:
-        print("  " + _fmt_line(m))
-
 def c_whoami(a):
     print(me_from(a))
 
@@ -704,7 +609,7 @@ def c_help(a):
     coord - coordenação entre agentes Claude (conflict-free, token-mínimo)
 
     SALAS são separadas — você só fala na sala em que entrou. Sem sala vinculada,
-    send/inbox/wake recusam (nada vaza p/ esforço alheio).
+    send/inbox/watch recusam (nada vaza p/ esforço alheio).
 
       rooms            lista as salas + agentes e a PASTA de cada um
       join <sala> --as <nome> [--modifies "X,Y"] [--reserves "Z"] [--body "..."]
@@ -716,8 +621,6 @@ def c_help(a):
       unlink <pasta>                      tira a pasta da sala
       move <pasta> <sala>                 move a pasta p/ outra sala
       nest <sala> <pai> | unnest <sala>   hierarquia sala->sala (DAG, sem ciclo)
-      bind --session <id> --as <nome> --room <sala>   reconecta agente ATIVO ao hook
-                                          (escreve binding sem resume/branch)
       init <nome> --room <sala> [...]            alias de join (compat)
       send --to <nome|todos> --type <aviso|pergunta|resposta|decisao|bloqueio>
            --subject "..." [--ref ID] [--status ...] [--body "..." | stdin]
@@ -725,8 +628,8 @@ def c_help(a):
       read [ID]        abre msg(s); sem ID = todas não lidas + marca lido
       open             perguntas abertas dirigidas a você
       answer <ID> [--to X] [--body "..."|stdin]   responde E fecha a pergunta
-      watch            tail nativo do feed da sala (rodar como background task)
-      wake             [hook Stop] surfaceia msgs novas pra mim e avança cursor de wake
+      watch            tail nativo do feed da sala — rode como Monitor persistente p/ ser
+                       avisado de mensagens novas (mesmo ocioso)
       whoami / help
 
     Identidade: --me NAME | $COORD_ME | ./.coordme
@@ -752,9 +655,6 @@ def main():
     s = sub.add_parser("move"); s.add_argument("path"); s.add_argument("room_name"); s.set_defaults(fn=c_move)
     s = sub.add_parser("nest"); s.add_argument("sala"); s.add_argument("pai"); s.set_defaults(fn=c_nest)
     s = sub.add_parser("unnest"); s.add_argument("sala"); s.set_defaults(fn=c_unnest)
-    s = sub.add_parser("bind"); s.add_argument("--session", required=True)
-    s.add_argument("--as", dest="as_", required=True); s.add_argument("--room", required=True)
-    s.set_defaults(fn=c_bind)
 
     s = sub.add_parser("join"); s.add_argument("room_name")
     s.add_argument("--as", dest="as_"); s.add_argument("--modifies"); s.add_argument("--reserves"); s.add_argument("--body")
@@ -775,7 +675,6 @@ def main():
     s = sub.add_parser("answer"); s.add_argument("id"); s.add_argument("--to"); s.add_argument("--body")
     s.set_defaults(fn=c_answer)
     s = sub.add_parser("watch"); s.set_defaults(fn=c_watch)
-    s = sub.add_parser("wake"); s.set_defaults(fn=c_wake)
     s = sub.add_parser("whoami"); s.set_defaults(fn=c_whoami)
     s = sub.add_parser("help"); s.set_defaults(fn=c_help)
 
@@ -783,13 +682,9 @@ def main():
     cmd = getattr(a, "cmd", None)
     if not cmd:
         c_help(a); return
-    _ensure_session_binding(a)   # force per-session: COORD_ME no env -> persiste binding 1x
-    # comandos que tocam uma sala: precisam de sala vinculada (senão recusam / no-op p/ wake)
-    if cmd in {"send", "inbox", "read", "open", "answer", "watch", "wake", "messages"}:
-        silent = (cmd == "wake")
-        if bind_room(a, silent=silent) is None:
-            if silent:
-                return                       # hook fica silencioso quando não há sala
+    # comandos que tocam uma sala: precisam de sala vinculada (senão recusam)
+    if cmd in {"send", "inbox", "read", "open", "answer", "watch", "messages"}:
+        if bind_room(a) is None:
             sys.exit("erro: nenhuma sala vinculada neste projeto.\n"
                      "      rode `coord rooms` e `coord join <sala> --as <nome>` primeiro.")
     a.fn(a)

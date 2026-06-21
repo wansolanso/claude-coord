@@ -14,9 +14,9 @@ description: >-
 Mensagens entre agentes Claude via arquivos locais, organizadas em **salas separadas**
 (uma por esforço/projeto). **Conflict-free** (cada mensagem é um arquivo próprio → vários
 Claudes escrevem ao mesmo tempo sem colidir) e **token-mínimo** (tudo por comando curto,
-nada de formato pra decorar). Recebimento em 2 camadas: hook `Stop` (auto-wake, cobre sessão
-ATIVA) + watcher `coord watch` (Monitor, acorda também a sessão OCIOSA — **recomendado p/
-agente autônomo que coordena**).
+nada de formato pra decorar). Recebimento em 2 camadas, **sem auto-wake forçado**: aviso
+passivo de não-lidas no seu próximo prompt (zero setup) + watcher `coord watch` rodando como
+Monitor (proativo, acorda até a sessão ociosa — **recomendado p/ agente autônomo**).
 
 ## Engine
 
@@ -35,7 +35,7 @@ Windows). O engine é Python 3 puro, sem dependências.
 Cada **sala** é um diretório próprio sob `~/.claude/coord-rooms/<sala>/`. Dois Claudes só
 se enxergam na **mesma sala** — esforços diferentes ficam isolados, e um `--to todos` só
 alcança quem está naquela sala. **Não existe sala default global**: sem sala vinculada,
-`send`/`inbox`/`wake` recusam (nada vaza pra um esforço alheio).
+`send`/`inbox`/`watch` recusam (nada vaza pra um esforço alheio).
 
 ```bash
 ENGINE rooms                     # lista as salas + agentes e a PASTA de cada um
@@ -58,29 +58,33 @@ Override pontual sem vincular: `--room <sala>` ou `$COORD_ROOM` / `$COORD_DIR` (
 > cwd. Vários Claudes no mesmo cwd compartilhariam `./.coordroom`/`./.coordme` (passe
 > `--me`/`--room` em cada comando se precisar).
 
-## Recebimento — duas camadas, escolha pelo tipo de sessão
+## Recebimento — duas camadas
 
-**1. Hook `Stop` (auto-wake) — custo zero, cobre sessão ATIVA.** O plugin instala um hook
-que, ao FIM DE CADA TURNO, puxa mensagens novas dirigidas a você e te acorda. Zero token
-quando não há mail. **Limite:** ele só dispara num fim de turno — **NÃO acorda uma sessão
-OCIOSA** (parada, sem turno). Pra uma sessão interativa (humano presente) isso basta: os
-turnos + o aviso no `UserPromptSubmit` cobrem.
+Sem polling. **Não há auto-wake que force seu turno** (o coord NÃO acorda você sozinho —
+isso é de propósito, pra não interromper ninguém sem pedido). Você recebe assim:
 
-**2. Watcher `ENGINE watch` — RECOMENDADO p/ agente AUTÔNOMO que coordena.** Suba 1x por
-sessão como background task persistente (Bash run_in_background / Monitor):
-```bash
-ENGINE watch
+**Camada 1 — aviso passivo (zero setup, já vem com o plugin).** O hook `UserPromptSubmit`
+te lembra de mensagens não-lidas **no seu próximo prompt**. Não acorda nada; só avisa quando
+você volta a interagir. Custo zero quando não há mail. Pra sessão **interativa** (humano
+presente) costuma bastar — aí você roda `ENGINE read`.
+
+**Camada 2 — Monitor persistente (proativo; RECOMENDADO p/ agente AUTÔNOMO que coordena).**
+Use a ferramenta **Monitor** do Claude Code rodando o watcher do coord como tarefa
+persistente — cada linha do `coord watch` (1 por mensagem nova de outro agente, self
+filtrado) vira um evento que **chega no chat mesmo com a sessão OCIOSA**:
 ```
-É um Monitor que **acorda mesmo a sessão OCIOSA** (eventos chegam assíncronos, fora de
-turno) — o que o hook `Stop` não faz. Num time, a maioria dos agentes está sempre ociosa
-esperando resposta; **sem watcher a mensagem trava** (o hook nunca dispara). Imprime 1 linha
-por mensagem nova de outro agente (self filtrado), latência 1-5s. Tail nativo em Python, sem
-dependência de shell.
+Monitor:
+  command:     ~/.claude/coord-bin/coord watch
+  description: coord <sala>: mensagens novas
+  persistent:  true
+  timeout_ms:  3600000
+```
+Encerra com `TaskStop`. Num time, a maioria dos agentes está sempre ociosa esperando — **sem
+o watcher a mensagem só aparece no seu próximo prompt** (Camada 1). Latência 1-5s, tail
+nativo em Python (sem dependência de shell).
 
-> Regra prática: **interativo** (você está junto) → hook basta. **Autônomo/headless que
-> coordena** → suba o `watch`. Pra acordar um ocioso que ainda não tem watcher, dê um turno
-> a ele de fora (`claude --resume <id> -p "..."` com `COORD_ME`/`COORD_ROOM`), e nesse turno
-> ele sobe o próprio `watch`.
+> Alternativa sem a ferramenta Monitor: rodar `~/.claude/coord-bin/coord watch` como bash em
+> background (`run_in_background`). Mesmo efeito.
 
 ## Uso diário
 

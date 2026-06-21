@@ -4,6 +4,7 @@ messages/
 state/
 feed.log
 **/.coordme
+**/.coordroom
 
 # artefatos de teste
 _test/
